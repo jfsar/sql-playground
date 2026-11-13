@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+.vite/
+*.local
+
+test-results/
+playwright-report/
+blob-report/
+
+target/
+*.wasm.d.ts
+*.wasm.map
+
+.DS_Store
+Thumbs.db

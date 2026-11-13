@@ -1,0 +1,16 @@
+{
+  "name": "sql-playground",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@11.1.2",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "preview": "pnpm --filter web preview",
+    "typecheck": "pnpm --filter web typecheck",
+    "lint": "pnpm --filter web lint",
+    "format": "pnpm --filter web format",
+    "test": "pnpm --filter web test",
+    "test:e2e": "pnpm --filter web test:e2e"
+  }
+}

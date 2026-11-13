@@ -1,0 +1,11 @@
+[package]
+name = "query-analyzer"
+version = "0.1.0"
+edition = "2024"
+description = "SQLite query plan parser and plan diff (PoC-gated, ADR-002)"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
