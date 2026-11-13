@@ -91,11 +91,7 @@ function readAutocommit(sqlite3: Sqlite3Static, db: Database): boolean {
   return sqlite3.capi.sqlite3_get_autocommit(dbPtr(db)) !== 0;
 }
 
-function makeError(
-  sqlite3: Sqlite3Static,
-  db: Database,
-  rc: number,
-): DbError {
+function makeError(sqlite3: Sqlite3Static, db: Database, rc: number): DbError {
   const capi = sqlite3.capi;
   const errOffset = capi.sqlite3_error_offset(dbPtr(db));
   return {

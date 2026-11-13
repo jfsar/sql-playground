@@ -234,8 +234,8 @@ export default function App() {
             {response && (
               <span className="ml-2 text-neutral-500">
                 {response.statements.length} statement
-                {response.statements.length === 1 ? "" : "s"} ·{" "}
-                {response.totalEngineMs.toFixed(2)} ms total
+                {response.statements.length === 1 ? "" : "s"} · {response.totalEngineMs.toFixed(2)}{" "}
+                ms total
                 {response.inTransaction ? (
                   <span className="ml-2 text-amber-400" data-testid="open-transaction">
                     open transaction

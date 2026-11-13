@@ -16,7 +16,5 @@ export type WorkerResponse =
 export function isWorkerResponse(data: unknown): data is WorkerResponse {
   if (typeof data !== "object" || data === null) return false;
   const t = (data as { type?: unknown }).type;
-  return (
-    t === "ready" || t === "executed" || t === "status-result" || t === "failed"
-  );
+  return t === "ready" || t === "executed" || t === "status-result" || t === "failed";
 }

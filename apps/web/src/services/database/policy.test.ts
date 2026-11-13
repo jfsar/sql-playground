@@ -29,7 +29,7 @@ describe("skipTrivia", () => {
 describe("isVacuumInto", () => {
   it("detects VACUUM INTO", () => {
     expect(isVacuumInto("VACUUM INTO 'out.db'")).toBe(true);
-    expect(isVacuumInto("vacuum into \"x\"")).toBe(true);
+    expect(isVacuumInto('vacuum into "x"')).toBe(true);
     expect(isVacuumInto("VACUUM  INTO 'x'")).toBe(true);
   });
 
