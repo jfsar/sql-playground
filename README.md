@@ -44,26 +44,28 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR:
 - `pnpm lint` · `pnpm typecheck` · `pnpm test` · `pnpm build`
 - Playwright e2e (Chromium), including OPFS persistence across reload
 
-## Deploy (Cloudflare Pages)
+## Deploy (Cloudflare Workers static assets)
 
 The app is a static SPA; SQLite runs in the browser. `opfs-sahpool` does **not** require COOP/COEP headers (ADR-001).
 
-### Dashboard
+### Dashboard (Workers Builds)
 
-1. Create a Pages project → **Import from Git**.
+1. Workers & Pages → **Create** → **Import a repository** (Workers, not Pages).
 2. Build command: `pnpm install && pnpm build`
-3. Build output directory: `apps/web/dist`
+3. Deploy command: `npx wrangler deploy -c wrangler.toml`
 4. Root directory: `/` (repository root — needed for the pnpm workspace).
-5. Deploy. Node 22+.
+5. Node 22+.
+
+`-c wrangler.toml` is required: without it Wrangler refuses to auto-detect an app at a pnpm workspace root.
 
 ### Wrangler
 
 ```bash
 pnpm build
-pnpm exec wrangler pages deploy apps/web/dist --project-name sql-playground
+pnpm exec wrangler deploy -c wrangler.toml
 ```
 
-`wrangler.toml` records `pages_build_output_dir` for local wrangler versions that support it.
+`wrangler.toml` serves `apps/web/dist` via Workers static assets with SPA fallback (`not_found_handling = "single-page-application"`).
 
 ## Browser support
 
@@ -76,4 +78,4 @@ See plan §2. Chrome/Edge/Firefox current, Safari 17+. Phones unsupported. If OP
 - [x] `opfs-sahpool` install; persist across reload (e2e)
 - [x] Prepare-loop statement splitting verified (unit tests)
 - [x] Transaction-state reading verified (`sqlite3_get_autocommit`)
-- [x] Cloudflare Pages deploy config
+- [x] Cloudflare Workers deploy config
