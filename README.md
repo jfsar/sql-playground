@@ -71,17 +71,18 @@ The app is a static SPA served by Cloudflare Pages; SQLite runs in the browser.
 1. Workers & Pages → **Create** → **Pages** → **Connect to Git** (Pages, not
    Workers).
 2. Root directory: `/` (repository root — needed for the pnpm workspace).
-3. Build command (installs Rust + wasm-bindgen only if missing, then builds):
+3. Build command:
 
    ```bash
-   command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --target wasm32-unknown-unknown)
-   export PATH="$HOME/.cargo/bin:$PATH"
-   command -v wasm-bindgen >/dev/null || cargo install wasm-bindgen-cli --version 0.2.130 --locked
-   pnpm install && pnpm build
+   bash scripts/cloudflare-build.sh
    ```
 
-   Cloudflare's build image does not include Rust; without the bootstrap lines
-   `pnpm build` fails with `sh: 1: cargo: not found`.
+   Pages runs the build command as a single `sh -c` line, so do not paste a
+   multi-line command into the dashboard — newlines are flattened and the shell
+   fails with `Syntax error: word unexpected`. The script bootstraps Rust +
+   wasm-bindgen (Cloudflare's build image has neither, otherwise `pnpm build`
+   fails with `sh: 1: cargo: not found`), then runs `pnpm install` and
+   `pnpm build`.
 4. Build output directory: `apps/web/dist`.
 5. Node 22+.
 
