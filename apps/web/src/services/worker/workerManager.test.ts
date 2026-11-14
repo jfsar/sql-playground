@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { WorkerManager } from "./workerManager";
+import { CANCELLED_ERROR_NAME, WorkerManager } from "./workerManager";
 import type { WorkerRequest, WorkerResponse } from "./protocol";
+
+const FAKE_STATUS = {
+  sqliteVersion: "3.54.1",
+  persistent: true,
+  filename: "/playground.sqlite3",
+  vfsName: "opfs-sahpool",
+  poolCapacity: 12,
+  poolFileCount: 1,
+  toolkit: "rust" as const,
+  journalMode: "delete",
+};
 
 class FakeWorker {
   onmessage: ((ev: MessageEvent<unknown>) => void) | null = null;
@@ -19,18 +30,7 @@ class FakeWorker {
   respond(req: WorkerRequest): void {
     let res: WorkerResponse;
     if (req.type === "init") {
-      res = {
-        type: "ready",
-        requestId: req.requestId,
-        status: {
-          sqliteVersion: "3.54.1",
-          persistent: true,
-          filename: "/playground.sqlite3",
-          vfsName: "opfs-sahpool",
-          poolCapacity: 12,
-          poolFileCount: 1,
-        },
-      };
+      res = { type: "ready", requestId: req.requestId, status: { ...FAKE_STATUS } };
     } else if (req.type === "execute") {
       res = {
         type: "executed",
@@ -50,19 +50,34 @@ class FakeWorker {
           totalEngineMs: 1,
         },
       };
-    } else {
+    } else if (req.type === "explain") {
       res = {
-        type: "status-result",
+        type: "explained",
         requestId: req.requestId,
-        status: {
+        plan: {
+          nodes: [
+            {
+              id: 0,
+              parentId: 0,
+              operation: "SCAN",
+              table: "t",
+              tags: [],
+              detail: "SCAN t",
+            },
+          ],
+          raw: [{ id: 0, parent: 0, detail: "SCAN t" }],
           sqliteVersion: "3.54.1",
-          persistent: true,
-          filename: "/playground.sqlite3",
-          vfsName: "opfs-sahpool",
-          poolCapacity: 12,
-          poolFileCount: 1,
         },
       };
+    } else if (req.type === "export") {
+      res = {
+        type: "exported",
+        requestId: req.requestId,
+        bytes: new Uint8Array([83, 81, 76, 105, 116, 101]),
+        name: "playground.sqlite3",
+      };
+    } else {
+      res = { type: "status-result", requestId: req.requestId, status: { ...FAKE_STATUS } };
     }
     this.onmessage?.({ data: res } as MessageEvent<unknown>);
   }
@@ -90,6 +105,18 @@ function makeManager(): { manager: WorkerManager; worker: FakeWorker } {
   const worker = new FakeWorker();
   const manager = new WorkerManager({ createWorker: () => worker as unknown as Worker });
   return { manager, worker };
+}
+
+function makeSeqManager(): { manager: WorkerManager; workers: FakeWorker[] } {
+  const workers: FakeWorker[] = [];
+  const manager = new WorkerManager({
+    createWorker: () => {
+      const w = new FakeWorker();
+      workers.push(w);
+      return w as unknown as Worker;
+    },
+  });
+  return { manager, workers };
 }
 
 describe("WorkerManager", () => {
@@ -187,6 +214,61 @@ describe("WorkerManager", () => {
     await expect(manager.init()).rejects.toThrow("no OPFS");
     const status = await manager.init();
     expect(status.persistent).toBe(true);
+    manager.terminate();
+  });
+
+  it("explain round-trips a parsed plan", async () => {
+    const { manager, worker } = makeManager();
+    const plan = await manager.explain("SELECT * FROM t");
+    expect(plan.nodes[0]?.operation).toBe("SCAN");
+    expect(plan.raw[0]?.detail).toBe("SCAN t");
+    expect(worker.posted.some((m) => m.type === "explain")).toBe(true);
+    manager.terminate();
+  });
+
+  it("exportDb returns bytes and a file name", async () => {
+    const { manager } = makeManager();
+    const exported = await manager.exportDb();
+    expect(exported.name).toBe("playground.sqlite3");
+    expect(exported.bytes.byteLength).toBeGreaterThan(0);
+    manager.terminate();
+  });
+
+  it("restart terminates the worker, cancels in-flight work, and re-inits (ADR-004)", async () => {
+    const { manager, workers } = makeSeqManager();
+    await manager.init();
+    expect(workers).toHaveLength(1);
+
+    workers[0]!.autoRespond = false;
+    const inflight = manager.execute("SELECT 1");
+    inflight.catch(() => undefined); // rejection asserted below
+    await workers[0]!.waitFor(() => workers[0]!.posted.some((m) => m.type === "execute"));
+
+    const status = await manager.restart();
+
+    // Old worker is gone, a fresh one initialized with real status.
+    expect(workers[0]!.terminated).toBe(true);
+    expect(workers).toHaveLength(2);
+    expect(workers[1]!.posted.some((m) => m.type === "init")).toBe(true);
+    expect(status.toolkit).toBe("rust");
+
+    // The in-flight request was rejected with the cancellation error.
+    await expect(inflight).rejects.toMatchObject({ name: CANCELLED_ERROR_NAME });
+
+    // The queue works again on the new worker.
+    const res = await manager.execute("SELECT 1");
+    expect(res.statements).toHaveLength(1);
+    manager.terminate();
+  });
+
+  it("restart before init completes still yields a working manager", async () => {
+    const { manager } = makeSeqManager();
+    const first = manager.init();
+    first.catch(() => undefined);
+    const status = await manager.restart();
+    expect(status.persistent).toBe(true);
+    const res = await manager.execute("SELECT 1");
+    expect(res.statements).toHaveLength(1);
     manager.terminate();
   });
 });

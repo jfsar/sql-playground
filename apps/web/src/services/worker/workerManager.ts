@@ -1,4 +1,4 @@
-import type { ExecutionResponse, WorkerStatus } from "../../shared/contracts";
+import type { ExecutionResponse, QueryPlan, WorkerStatus } from "../../shared/contracts";
 import { isWorkerResponse, type WorkerRequest, type WorkerResponse } from "./protocol";
 
 interface Pending {
@@ -11,15 +11,30 @@ export interface WorkerManagerOptions {
   createWorker?: () => Worker;
 }
 
+export interface ExportedDatabase {
+  bytes: Uint8Array;
+  name: string;
+}
+
 function defaultCreateWorker(): Worker {
   return new Worker(new URL("../../workers/sqlite.worker.ts", import.meta.url), {
     type: "module",
   });
 }
 
+/** Error name used when a request is cancelled by a worker restart (ADR-004). */
+export const CANCELLED_ERROR_NAME = "CancelledError";
+
+function cancelledError(): Error {
+  const error = new Error("Query cancelled; worker restarted.");
+  error.name = CANCELLED_ERROR_NAME;
+  return error;
+}
+
 /**
  * Main-thread Worker Manager: request correlation via requestId, single-writer
- * queue (one request runs at a time), crash → rejection of in-flight requests.
+ * queue (one request runs at a time), crash → rejection of in-flight requests,
+ * and terminate-and-restart cancellation (ADR-004).
  *
  * `init()` is independent of the queue so `execute`/`status` can await it
  * without deadlocking against themselves.
@@ -107,7 +122,7 @@ export class WorkerManager {
       return Promise.reject(new Error("WorkerManager has been terminated"));
     }
     if (!this.initialized) {
-      this.initialized = this.send({ type: "init", requestId: this.nextRequestId() })
+      const p: Promise<WorkerStatus> = this.send({ type: "init", requestId: this.nextRequestId() })
         .then((res) => {
           if (res.type !== "ready") {
             throw new Error(`Unexpected init response: ${res.type}`);
@@ -115,9 +130,11 @@ export class WorkerManager {
           return res.status;
         })
         .catch((err: unknown) => {
-          this.initialized = null;
+          // Only clear if a restart has not already replaced this attempt.
+          if (this.initialized === p) this.initialized = null;
           throw err;
         });
+      this.initialized = p;
     }
     return this.initialized;
   }
@@ -157,7 +174,59 @@ export class WorkerManager {
     });
   }
 
-  /** Terminate the worker (used by cancel/recovery paths in later weeks). */
+  /** EXPLAIN QUERY PLAN for one statement, parsed by the worker's PlanToolkit. */
+  async explain(sql: string): Promise<QueryPlan> {
+    if (this.terminated) {
+      throw new Error("WorkerManager has been terminated");
+    }
+    await this.init();
+    return this.enqueue(async () => {
+      const res = await this.send({ type: "explain", requestId: this.nextRequestId(), sql });
+      if (res.type !== "explained") {
+        throw new Error(`Unexpected explain response: ${res.type}`);
+      }
+      return res.plan;
+    });
+  }
+
+  /** Export the active database file from the OPFS pool (ADR-001 check). */
+  async exportDb(): Promise<ExportedDatabase> {
+    if (this.terminated) {
+      throw new Error("WorkerManager has been terminated");
+    }
+    await this.init();
+    return this.enqueue(async () => {
+      const res = await this.send({ type: "export", requestId: this.nextRequestId() });
+      if (res.type !== "exported") {
+        throw new Error(`Unexpected export response: ${res.type}`);
+      }
+      return { bytes: res.bytes, name: res.name };
+    });
+  }
+
+  /**
+   * ADR-004 cancellation: terminate the worker, reject in-flight requests
+   * with `CancelledError`, and start a fresh worker that reopens the database.
+   * Resolves with the fresh worker's status once it is ready again.
+   */
+  async restart(): Promise<WorkerStatus> {
+    if (this.terminated) {
+      throw new Error("WorkerManager has been terminated");
+    }
+    for (const [, entry] of this.pending) {
+      entry.reject(cancelledError());
+    }
+    this.pending.clear();
+    this.queue = Promise.resolve();
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+    }
+    this.initialized = null;
+    return this.init();
+  }
+
+  /** Permanently stop the manager (used by tests / page teardown). */
   terminate(): void {
     this.terminated = true;
     for (const [, entry] of this.pending) {

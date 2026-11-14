@@ -78,6 +78,41 @@ export interface DatabaseInfo {
   status: DatabaseStatus;
 }
 
+/** Plan toolkit contracts (plan §4) — Rust behind this, TS fallback. */
+
+export interface RawPlanRow {
+  id: number;
+  parent: number;
+  detail: string;
+}
+
+export type PlanOperation = "SCAN" | "SEARCH" | "OTHER";
+
+export interface QueryPlanNode {
+  id: number;
+  /** As reported by SQLite; 0 = root. */
+  parentId: number;
+  operation: PlanOperation;
+  table?: string;
+  index?: string;
+  /** e.g. "COVERING INDEX", "AUTOMATIC INDEX", "TEMP B-TREE". */
+  tags: string[];
+  /** Raw SQLite text, always preserved. */
+  detail: string;
+}
+
+export interface QueryPlan {
+  nodes: QueryPlanNode[];
+  raw: RawPlanRow[];
+  sqliteVersion: string;
+}
+
+export interface PlanDiff {
+  added: QueryPlanNode[];
+  removed: QueryPlanNode[];
+  changed: { before: QueryPlanNode; after: QueryPlanNode }[];
+}
+
 export interface WorkerStatus {
   sqliteVersion: string;
   /** True when databases live in OPFS (opfs-sahpool), false for in-memory fallback. */
@@ -86,6 +121,10 @@ export interface WorkerStatus {
   vfsName: string | null;
   poolCapacity: number | null;
   poolFileCount: number | null;
+  /** Which PlanToolkit implementation loaded (ADR-002 gate). */
+  toolkit: "rust" | "typescript";
+  /** Live SQLite journal mode (ADR-001 PoC check). */
+  journalMode: string;
 }
 
 export const DEFAULT_MAX_ROWS = 1000;

@@ -2,7 +2,10 @@
 import sqlite3InitModule from "@sqlite.org/sqlite-wasm";
 import type { Database, SAHPoolUtil, Sqlite3Static } from "@sqlite.org/sqlite-wasm";
 import { executeScript } from "../services/database/execute";
+import { explainQuery } from "../services/database/explain";
 import type { WorkerRequest, WorkerResponse } from "../services/worker/protocol";
+import { createPlanToolkit } from "../services/toolkit";
+import type { PlanToolkit } from "../services/toolkit/planToolkit";
 import type { WorkerStatus } from "../shared/contracts";
 
 const VFS_NAME = "sql-playground";
@@ -15,22 +18,39 @@ let db: Database | null = null;
 let poolUtil: SAHPoolUtil | null = null;
 let persistent = false;
 let status: WorkerStatus | null = null;
+let toolkit: PlanToolkit | null = null;
+let toolkitImpl: "rust" | "typescript" = "typescript";
 
 function post(msg: WorkerResponse): void {
   (globalThis as unknown as Worker).postMessage(msg);
 }
 
-function fail(requestId: string, err: unknown): void {
+function fail(requestId: string, err: unknown, code = "WORKER_CRASHED"): void {
   const message = err instanceof Error ? err.message : String(err);
   post({
     type: "failed",
     requestId,
-    error: { code: "WORKER_CRASHED", message },
+    error: { code, message },
   });
 }
 
+/** Live journal mode (ADR-001 PoC check: WAL support under opfs-sahpool). */
+function readJournalMode(db: Database): string {
+  try {
+    const rows = db.exec("PRAGMA journal_mode", {
+      rowMode: "array",
+      returnValue: "resultRows",
+    }) as unknown;
+    // [[mode]] — one row, one column. ("scalar" rowMode is not accepted at runtime.)
+    const first = Array.isArray(rows) && Array.isArray(rows[0]) ? rows[0][0] : rows;
+    return typeof first === "string" ? first : String(first ?? "unknown");
+  } catch {
+    return "unknown";
+  }
+}
+
 async function init(requestId: string): Promise<void> {
-  if (status && db) {
+  if (status && db && toolkit) {
     post({ type: "ready", requestId, status });
     return;
   }
@@ -53,6 +73,13 @@ async function init(requestId: string): Promise<void> {
     persistent = false;
   }
 
+  if (!toolkit) {
+    // Rust wasm first, TypeScript fallback — both behind PlanToolkit (ADR-002).
+    const created = await createPlanToolkit();
+    toolkit = created.toolkit;
+    toolkitImpl = created.implementation;
+  }
+
   status = {
     sqliteVersion: sqlite3.version.libVersion,
     persistent,
@@ -60,6 +87,8 @@ async function init(requestId: string): Promise<void> {
     vfsName: db.dbVfsName() ?? null,
     poolCapacity: poolUtil ? poolUtil.getCapacity() : null,
     poolFileCount: poolUtil ? poolUtil.getFileCount() : null,
+    toolkit: toolkitImpl,
+    journalMode: readJournalMode(db),
   };
 
   post({ type: "ready", requestId, status });
@@ -77,6 +106,36 @@ function handleExecute(req: Extract<WorkerRequest, { type: "execute" }>): void {
     post({ type: "executed", requestId: req.requestId, response });
   } catch (err) {
     fail(req.requestId, err);
+  }
+}
+
+function handleExplain(req: Extract<WorkerRequest, { type: "explain" }>): void {
+  if (!sqlite3 || !db || !toolkit) {
+    fail(req.requestId, new Error("Worker not initialized; send init first."));
+    return;
+  }
+  try {
+    const plan = explainQuery(sqlite3, db, toolkit, req.sql);
+    post({ type: "explained", requestId: req.requestId, plan });
+  } catch (err) {
+    fail(req.requestId, err, "SQL_ERROR");
+  }
+}
+
+function handleExport(req: Extract<WorkerRequest, { type: "export" }>): void {
+  if (!poolUtil) {
+    fail(
+      req.requestId,
+      new Error("Export unavailable: database is in-memory (browser storage not persistent)."),
+      "STORAGE_UNAVAILABLE",
+    );
+    return;
+  }
+  try {
+    const bytes = poolUtil.exportFile(DB_FILENAME);
+    post({ type: "exported", requestId: req.requestId, bytes, name: "playground.sqlite3" });
+  } catch (err) {
+    fail(req.requestId, err, "IO");
   }
 }
 
@@ -105,6 +164,14 @@ globalThis.onmessage = (event: MessageEvent<WorkerRequest>) => {
   }
   if (req.type === "execute") {
     handleExecute(req);
+    return;
+  }
+  if (req.type === "explain") {
+    handleExplain(req);
+    return;
+  }
+  if (req.type === "export") {
+    handleExport(req);
     return;
   }
   if (req.type === "status") {

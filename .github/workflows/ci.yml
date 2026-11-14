@@ -19,8 +19,22 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: jetli/wasm-bindgen-action@v0.2.0
+        with:
+          version: v0.2.130
+
       - name: Install
         run: pnpm install --frozen-lockfile
+
+      - name: Rust tests (plan parser + diff)
+        run: cargo test
+
+      - name: Build query-analyzer wasm (ADR-002 gate)
+        run: pnpm build:wasm
 
       - name: Lint
         run: pnpm lint
@@ -28,14 +42,14 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Unit tests
+      - name: Unit tests (includes wasm round-trip)
         run: pnpm test
 
       - name: Build (catches Vite/WASM packaging issues)
-        run: pnpm build
+        run: pnpm --filter web build
 
   e2e:
-    name: Playwright e2e
+    name: Playwright e2e (production build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,14 +61,29 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: jetli/wasm-bindgen-action@v0.2.0
+        with:
+          version: v0.2.130
+
       - name: Install
         run: pnpm install --frozen-lockfile
+
+      - name: Build query-analyzer wasm (ADR-002 gate)
+        run: pnpm build:wasm
 
       - name: Install Playwright browsers
         run: pnpm --filter web exec playwright install --with-deps chromium
 
-      - name: Run e2e
+      # E2E_PREVIEW runs the suite against `vite preview` (production bundle):
+      # the ADR-002 gate requires the wasm to load in a production Vite build.
+      - name: Run e2e (production preview)
         run: pnpm test:e2e
+        env:
+          E2E_PREVIEW: "1"
 
       - uses: actions/upload-artifact@v4
         if: failure()

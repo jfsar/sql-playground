@@ -4,8 +4,9 @@
   "version": "0.0.0",
   "packageManager": "pnpm@11.1.2",
   "scripts": {
-    "dev": "pnpm --filter web dev",
-    "build": "pnpm --filter web build",
+    "dev": "node scripts/ensure-wasm.mjs && pnpm --filter web dev",
+    "build:wasm": "cargo build --release --target wasm32-unknown-unknown -p query-analyzer && wasm-bindgen --target web --out-dir apps/web/src/generated/query-analyzer --out-name query_analyzer target/wasm32-unknown-unknown/release/query_analyzer.wasm",
+    "build": "pnpm build:wasm && pnpm --filter web build",
     "preview": "pnpm --filter web preview",
     "typecheck": "pnpm --filter web typecheck",
     "lint": "pnpm --filter web lint",
