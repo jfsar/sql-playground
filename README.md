@@ -60,14 +60,18 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR:
 - `pnpm lint` · `pnpm typecheck` · `pnpm test` · `pnpm build`
 - Playwright e2e against the **production build** (`E2E_PREVIEW=1`), Chromium
 
-## Deploy (Cloudflare Workers static assets)
+## Deploy (Cloudflare Pages)
 
-The app is a static SPA; SQLite runs in the browser. `opfs-sahpool` does **not** require COOP/COEP headers (ADR-001).
+The app is a static SPA served by Cloudflare Pages; SQLite runs in the browser.
+`opfs-sahpool` does **not** require COOP/COEP headers (ADR-001).
+`wrangler.toml` sets `pages_build_output_dir = "apps/web/dist"`.
 
-### Dashboard (Workers Builds)
+### Dashboard (Pages Builds)
 
-1. Workers & Pages → **Create** → **Import a repository** (Workers, not Pages).
-2. Build command (installs Rust + wasm-bindgen only if missing, then builds):
+1. Workers & Pages → **Create** → **Pages** → **Connect to Git** (Pages, not
+   Workers).
+2. Root directory: `/` (repository root — needed for the pnpm workspace).
+3. Build command (installs Rust + wasm-bindgen only if missing, then builds):
 
    ```bash
    command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --target wasm32-unknown-unknown)
@@ -76,20 +80,20 @@ The app is a static SPA; SQLite runs in the browser. `opfs-sahpool` does **not**
    pnpm install && pnpm build
    ```
 
-3. Deploy command: `npx wrangler deploy -c wrangler.toml`
-4. Root directory: `/` (repository root — needed for the pnpm workspace).
+   Cloudflare's build image does not include Rust; without the bootstrap lines
+   `pnpm build` fails with `sh: 1: cargo: not found`.
+4. Build output directory: `apps/web/dist`.
 5. Node 22+.
-
-`-c wrangler.toml` is required: without it Wrangler refuses to auto-detect an app at a pnpm workspace root.
 
 ### Wrangler
 
 ```bash
-pnpm build
-pnpm exec wrangler deploy -c wrangler.toml
+pnpm build   # requires Rust + wasm-bindgen 0.2.130 locally
+pnpm exec wrangler pages deploy apps/web/dist --project-name sql-playground
 ```
 
-`wrangler.toml` serves `apps/web/dist` via Workers static assets with SPA fallback (`not_found_handling = "single-page-application"`).
+`apps/web/public/_redirects` (`/* /index.html 200`) provides the SPA fallback
+for client-side deep links.
 
 ## Browser support
 
@@ -110,7 +114,7 @@ OPFS is unavailable the app falls back to an in-memory database with a visible
 - [x] `opfs-sahpool` install; persist across reload (e2e)
 - [x] Prepare-loop statement splitting verified (unit tests)
 - [x] Transaction-state reading verified (`sqlite3_get_autocommit`)
-- [x] Cloudflare Workers deploy config
+- [x] Cloudflare Pages deploy config
 
 ### Week 2
 

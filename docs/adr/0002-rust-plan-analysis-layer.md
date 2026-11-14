@@ -59,7 +59,7 @@ remains open until Week 10's matrix pass.
 
 - The worker bundle carries ~171 KB of wasm (plus ~19 KB glue). Acceptable for
   a dev tool; no main-thread cost (loads inside the worker).
-- CI installs Rust + `wasm-bindgen-cli v0.2.130` and runs `pnpm build:wasm`
+- CI installs Rust + `wasm-bindgen-cli 0.2.130` and runs `pnpm build:wasm`
   before typecheck/test/build; `cargo test` runs in CI.
 - Version drift between the crate's `wasm-bindgen` dependency and the CLI is a
   known failure mode — both are pinned to `0.2.130` and must be bumped

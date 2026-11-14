@@ -1,6 +1,5 @@
+# Cloudflare Pages project settings (also usable via `wrangler pages deploy`).
+# See README → Deploy for dashboard steps.
 name = "sql-playground"
 compatibility_date = "2026-11-01"
-
-[assets]
-directory = "./apps/web/dist"
-not_found_handling = "single-page-application"
+pages_build_output_dir = "apps/web/dist"
