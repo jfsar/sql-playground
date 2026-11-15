@@ -47,9 +47,16 @@ export class WorkerManager {
   private nextId = 0;
   private initialized: Promise<WorkerStatus> | null = null;
   private terminated = false;
+  /** Pool file the worker should have open; re-sent with every init (restart/crash). */
+  private activeFile: string | null = null;
 
   constructor(options: WorkerManagerOptions = {}) {
     this.createWorker = options.createWorker ?? defaultCreateWorker;
+  }
+
+  /** Pool file currently open (null = none). */
+  get activeFilename(): string | null {
+    return this.activeFile;
   }
 
   private ensureWorker(): Worker {
@@ -122,7 +129,12 @@ export class WorkerManager {
       return Promise.reject(new Error("WorkerManager has been terminated"));
     }
     if (!this.initialized) {
-      const p: Promise<WorkerStatus> = this.send({ type: "init", requestId: this.nextRequestId() })
+      const request: WorkerRequest = {
+        type: "init",
+        requestId: this.nextRequestId(),
+        ...(this.activeFile ? { openFile: this.activeFile } : {}),
+      };
+      const p: Promise<WorkerStatus> = this.send(request)
         .then((res) => {
           if (res.type !== "ready") {
             throw new Error(`Unexpected init response: ${res.type}`);
@@ -137,6 +149,67 @@ export class WorkerManager {
       this.initialized = p;
     }
     return this.initialized;
+  }
+
+  /**
+   * Open (creating if needed) a pool file and make it the active database.
+   * Returns the file size in bytes as reported by SQLite.
+   */
+  async openFile(filename: string): Promise<number> {
+    if (this.terminated) {
+      throw new Error("WorkerManager has been terminated");
+    }
+    await this.init();
+    const sizeBytes = await this.enqueue(async () => {
+      const res = await this.send({
+        type: "open-db",
+        requestId: this.nextRequestId(),
+        filename,
+      });
+      if (res.type !== "opened") {
+        throw new Error(`Unexpected open-db response: ${res.type}`);
+      }
+      return res.sizeBytes;
+    });
+    // Track only after success so a failed open does not poison restart recovery.
+    this.activeFile = filename;
+    return sizeBytes;
+  }
+
+  /** Names of the files currently allocated in the OPFS pool. */
+  async listFiles(): Promise<string[]> {
+    if (this.terminated) {
+      throw new Error("WorkerManager has been terminated");
+    }
+    await this.init();
+    return this.enqueue(async () => {
+      const res = await this.send({ type: "list-files", requestId: this.nextRequestId() });
+      if (res.type !== "files") {
+        throw new Error(`Unexpected list-files response: ${res.type}`);
+      }
+      return res.files;
+    });
+  }
+
+  /** Unlink a pool file; clears the active file if it is the one removed. */
+  async deleteFile(filename: string): Promise<{ existed: boolean }> {
+    if (this.terminated) {
+      throw new Error("WorkerManager has been terminated");
+    }
+    await this.init();
+    const result = await this.enqueue(async () => {
+      const res = await this.send({
+        type: "delete-file",
+        requestId: this.nextRequestId(),
+        filename,
+      });
+      if (res.type !== "deleted") {
+        throw new Error(`Unexpected delete-file response: ${res.type}`);
+      }
+      return { existed: res.existed };
+    });
+    if (this.activeFile === filename) this.activeFile = null;
+    return result;
   }
 
   async execute(sql: string, opts: { maxRows?: number } = {}): Promise<ExecutionResponse> {

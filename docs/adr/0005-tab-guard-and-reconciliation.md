@@ -1,9 +1,9 @@
 # ADR-005: Tab-ownership guard and database reconciliation
 
-- Status: **Accepted** (tab guard PoC verified; reconciliation design decided,
-  implementation scheduled Week 3)
+- Status: **Accepted** (tab guard PoC verified Week 2; reconciliation
+  **implemented Week 3** — see ADR-006 for the multi-database foundation)
 - Date: 2026-11-14 (Week 2 of FINAL_PROJECT_PLAN.md)
-- Related: plan §5.6; ADR-001 (single-connection VFS)
+- Related: plan §5.6; ADR-001 (single-connection VFS); ADR-006
 
 ## Context
 
@@ -56,7 +56,7 @@ crash or interrupted delete.
 | Retry after the owner closes | ✅ Unit-tested (blocked attempt is re-requested on retry; a cached *grant* is never re-requested) |
 | Owner lifetime vs worker restart | ✅ Restart e2e passes with the lock held — the lock is page-scoped, worker-scoped state cannot release it |
 | Lock request failure | ✅ Treated as blocked (conservative), unit-tested |
-| Reconciliation behavior | ⏳ Not exercised in the PoC (single hardcoded file, no metadata store yet) — Week 3 delivers it with dedicated tests (acceptance scenario 24) |
+| Reconciliation behavior | ✅ Week 3: pure drift rules unit-tested (orphan file → "Recovered database", missing file → `missing-file`, interrupted two-phase delete completed, foreign files ignored — scenario 24) and exercised end-to-end by `e2e/week3.spec.ts` (create/rename/delete + reload persistence) |
 
 ## Consequences
 

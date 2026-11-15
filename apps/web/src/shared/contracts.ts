@@ -1,5 +1,7 @@
 /** Typed contracts from FINAL_PROJECT_PLAN.md §5.3. */
 
+import type { DbErrorCode } from "./errors";
+
 /** No information loss across the worker boundary. */
 export type SqlValue = null | number | bigint | string | Uint8Array;
 
@@ -49,25 +51,19 @@ export interface ExecutionResponse {
 }
 
 export interface DbError {
-  code:
-    | "SQL_ERROR"
-    | "CONSTRAINT"
-    | "CANCELLED"
-    | "IO"
-    | "QUOTA"
-    | "POLICY_BLOCKED"
-    | "UNSUPPORTED_FILE"
-    | "CORRUPT_FILE"
-    | "LOCKED_BY_OTHER_TAB"
-    | "WORKER_CRASHED"
-    | "STORAGE_UNAVAILABLE";
+  code: DbErrorCode;
   message: string;
   sqliteCode?: number;
   /** Error position in statement, if SQLite reports it (UTF-8 byte offset). */
   offset?: number;
 }
 
-export type DatabaseStatus = "ok" | "missing-file" | "recovered";
+/**
+ * `deleting` is the in-progress phase of the two-phase delete (plan §5.6,
+ * ADR-005): metadata is marked first, the file is removed next, and the entry
+ * is dropped last. Startup reconciliation completes interrupted deletes.
+ */
+export type DatabaseStatus = "ok" | "missing-file" | "recovered" | "deleting";
 
 export interface DatabaseInfo {
   id: string;
@@ -117,7 +113,8 @@ export interface WorkerStatus {
   sqliteVersion: string;
   /** True when databases live in OPFS (opfs-sahpool), false for in-memory fallback. */
   persistent: boolean;
-  filename: string;
+  /** Pool file currently open, or null when no database is open. */
+  filename: string | null;
   vfsName: string | null;
   poolCapacity: number | null;
   poolFileCount: number | null;

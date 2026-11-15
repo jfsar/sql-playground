@@ -3,11 +3,14 @@ import type { ExecutionResponse, QueryPlan, WorkerStatus } from "../../shared/co
 /** Every message carries a requestId; responses echo it (plan §5.4). */
 
 export type WorkerRequest =
-  | { type: "init"; requestId: string }
+  | { type: "init"; requestId: string; openFile?: string }
   | { type: "execute"; requestId: string; sql: string; maxRows?: number }
   | { type: "status"; requestId: string }
   | { type: "explain"; requestId: string; sql: string }
-  | { type: "export"; requestId: string };
+  | { type: "export"; requestId: string; filename?: string }
+  | { type: "open-db"; requestId: string; filename: string }
+  | { type: "list-files"; requestId: string }
+  | { type: "delete-file"; requestId: string; filename: string };
 
 export type WorkerResponse =
   | { type: "ready"; requestId: string; status: WorkerStatus }
@@ -15,6 +18,9 @@ export type WorkerResponse =
   | { type: "status-result"; requestId: string; status: WorkerStatus }
   | { type: "explained"; requestId: string; plan: QueryPlan }
   | { type: "exported"; requestId: string; bytes: Uint8Array; name: string }
+  | { type: "opened"; requestId: string; filename: string; sizeBytes: number }
+  | { type: "files"; requestId: string; files: string[] }
+  | { type: "deleted"; requestId: string; filename: string; existed: boolean }
   | { type: "failed"; requestId: string; error: { code: string; message: string } };
 
 const RESPONSE_TYPES = new Set([
@@ -23,6 +29,9 @@ const RESPONSE_TYPES = new Set([
   "status-result",
   "explained",
   "exported",
+  "opened",
+  "files",
+  "deleted",
   "failed",
 ]);
 

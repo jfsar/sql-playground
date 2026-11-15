@@ -18,6 +18,8 @@ class FakeWorker {
   onerror: ((ev: ErrorEvent) => void) | null = null;
   onmessageerror: ((ev: MessageEvent) => void) | null = null;
   readonly posted: WorkerRequest[] = [];
+  readonly files = new Set<string>(["/db_seed.sqlite3"]);
+  active: string | null = null;
   terminated = false;
   autoRespond = true;
 
@@ -68,6 +70,26 @@ class FakeWorker {
           raw: [{ id: 0, parent: 0, detail: "SCAN t" }],
           sqliteVersion: "3.54.1",
         },
+      };
+    } else if (req.type === "open-db") {
+      this.active = req.filename;
+      this.files.add(req.filename);
+      res = {
+        type: "opened",
+        requestId: req.requestId,
+        filename: req.filename,
+        sizeBytes: 4096,
+      };
+    } else if (req.type === "list-files") {
+      res = { type: "files", requestId: req.requestId, files: [...this.files] };
+    } else if (req.type === "delete-file") {
+      const existed = this.files.delete(req.filename);
+      if (this.active === req.filename) this.active = null;
+      res = {
+        type: "deleted",
+        requestId: req.requestId,
+        filename: req.filename,
+        existed,
       };
     } else if (req.type === "export") {
       res = {
@@ -269,6 +291,63 @@ describe("WorkerManager", () => {
     expect(status.persistent).toBe(true);
     const res = await manager.execute("SELECT 1");
     expect(res.statements).toHaveLength(1);
+    manager.terminate();
+  });
+});
+
+describe("WorkerManager multi-database", () => {
+  it("openFile activates a pool file and reports its size", async () => {
+    const { manager, worker } = makeManager();
+    const size = await manager.openFile("/db_abc.sqlite3");
+
+    expect(size).toBe(4096);
+    expect(manager.activeFilename).toBe("/db_abc.sqlite3");
+    const openReq = worker.posted.find((m) => m.type === "open-db");
+    expect(openReq).toMatchObject({ filename: "/db_abc.sqlite3" });
+    manager.terminate();
+  });
+
+  it("re-sends the active file with init after a restart (recovery)", async () => {
+    const { manager, workers } = makeSeqManager();
+    await manager.init();
+    await manager.openFile("/db_abc.sqlite3");
+
+    await manager.restart();
+
+    const initReq = workers[1]!.posted.find((m) => m.type === "init");
+    expect(initReq).toMatchObject({ openFile: "/db_abc.sqlite3" });
+    // The manager's view of the active file survives the restart.
+    expect(manager.activeFilename).toBe("/db_abc.sqlite3");
+    manager.terminate();
+  });
+
+  it("init carries no openFile before any database is opened", async () => {
+    const { manager, worker } = makeManager();
+    await manager.init();
+    const initReq = worker.posted.find((m) => m.type === "init");
+    expect(initReq).toBeDefined();
+    expect(initReq && "openFile" in initReq ? initReq.openFile : undefined).toBeUndefined();
+    manager.terminate();
+  });
+
+  it("deleteFile clears the active file only when it matches", async () => {
+    const { manager, worker } = makeManager();
+    await manager.openFile("/db_one.sqlite3");
+
+    await manager.deleteFile("/db_other.sqlite3");
+    expect(manager.activeFilename).toBe("/db_one.sqlite3");
+
+    const result = await manager.deleteFile("/db_one.sqlite3");
+    expect(result.existed).toBe(true);
+    expect(manager.activeFilename).toBeNull();
+    expect(worker.files.has("/db_one.sqlite3")).toBe(false);
+    manager.terminate();
+  });
+
+  it("listFiles returns the pool's file names", async () => {
+    const { manager } = makeManager();
+    const files = await manager.listFiles();
+    expect(files).toContain("/db_seed.sqlite3");
     manager.terminate();
   });
 });

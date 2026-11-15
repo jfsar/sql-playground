@@ -1,14 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { TabBlockedScreen } from "./TabBlockedScreen";
+import { DatabaseExplorer } from "../features/database-explorer/DatabaseExplorer";
+import { PlanPanel } from "../features/query-analysis/PlanPanel";
+import { StatementBlock } from "../features/query-results/StatementBlock";
+import { DatabaseService, type StartupResult } from "../services/database/databaseService";
+import {
+  getStorageInfo,
+  requestPersistentStorage,
+  type StorageInfo,
+} from "../services/storage/quota";
+import { idFromDbFileName } from "../services/storage/reconcile";
+import { StorageService } from "../services/storage/storageService";
+import { createIdbMetadataStore } from "../services/storage/metadataDb";
 import { acquireTabLock, retryTabLock } from "../services/storage/tabGuard";
+import { DbOperationError, describeDbError } from "../shared/errors";
 import { WorkerManager } from "../services/worker/workerManager";
 import type {
+  DatabaseInfo,
   ExecutionResponse,
   QueryPlan,
   StatementResult,
   WorkerStatus,
 } from "../shared/contracts";
 
-const DEFAULT_SQL = `-- Week 2 PoC: run SQL, then Explain / Restart worker / Export
+const DEFAULT_SQL = `-- Run SQL (⌘/Ctrl+Enter), or Explain to inspect the query plan
 CREATE TABLE IF NOT EXISTS notes (
   id INTEGER PRIMARY KEY,
   body TEXT NOT NULL
@@ -24,147 +39,23 @@ function getSharedManager(): WorkerManager {
   return sharedManager;
 }
 
-function formatValue(v: unknown): string {
-  if (v === null) return "NULL";
-  if (v instanceof Uint8Array) return `<BLOB ${v.byteLength} bytes>`;
-  if (typeof v === "bigint") return `${v}n`;
-  return String(v);
-}
-
-function StatementBlock({ result, index }: { result: StatementResult; index: number }) {
-  if (result.kind === "error") {
-    return (
-      <div
-        data-testid={`stmt-error-${index}`}
-        className="rounded border border-red-700 bg-red-950/40 p-3 text-sm"
-      >
-        <div className="font-semibold text-red-300">
-          Statement {index + 1} failed · {result.error.code}
-        </div>
-        <div className="mt-1 text-red-200">{result.error.message}</div>
-        <pre className="mt-2 overflow-x-auto rounded bg-black/30 p-2 text-red-100">
-          {result.span.text}
-        </pre>
-        {result.error.offset !== undefined && (
-          <div className="mt-1 text-red-300/80">offset: {result.error.offset}</div>
-        )}
-      </div>
-    );
+let sharedDatabase: DatabaseService | null = null;
+function getSharedDatabase(): DatabaseService {
+  if (!sharedDatabase) {
+    const manager = getSharedManager();
+    const storage = new StorageService({ store: createIdbMetadataStore(), worker: manager });
+    sharedDatabase = new DatabaseService({ backend: manager, storage });
   }
-
-  if (result.kind === "change") {
-    return (
-      <div
-        data-testid={`stmt-change-${index}`}
-        className="rounded border border-neutral-700 bg-neutral-900 p-3 text-sm"
-      >
-        <div className="font-semibold text-emerald-300">
-          Statement {index + 1} · change · {result.engineMs.toFixed(2)} ms
-        </div>
-        <div className="mt-1 text-neutral-300">
-          {result.rowsAffected !== undefined
-            ? `rows affected: ${result.rowsAffected}`
-            : "no row count (DDL/PRAGMA)"}
-        </div>
-        <pre className="mt-2 overflow-x-auto text-neutral-400">{result.sql}</pre>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      data-testid={`stmt-rows-${index}`}
-      className="rounded border border-neutral-700 bg-neutral-900 p-3 text-sm"
-    >
-      <div className="font-semibold text-sky-300">
-        Statement {index + 1} · {result.rows.length} row{result.rows.length === 1 ? "" : "s"}
-        {result.truncated ? " (truncated)" : ""} · {result.engineMs.toFixed(2)} ms
-      </div>
-      <div className="mt-1 text-neutral-400">engine time (first {result.rows.length} rows)</div>
-      <div className="mt-2 overflow-x-auto">
-        <table className="min-w-full border-collapse text-left">
-          <thead>
-            <tr className="border-b border-neutral-700">
-              {result.columns.map((c) => (
-                <th key={c.name} className="px-2 py-1 font-medium text-neutral-200">
-                  {c.name}
-                  {c.declaredType ? (
-                    <span className="ml-1 font-normal text-neutral-500">{c.declaredType}</span>
-                  ) : null}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {result.rows.map((row, ri) => (
-              <tr key={ri} className="border-b border-neutral-800/60">
-                {row.map((cell, ci) => (
-                  <td key={ci} className="px-2 py-1 font-mono text-neutral-100">
-                    {formatValue(cell)}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <pre className="mt-2 overflow-x-auto text-neutral-500">{result.sql}</pre>
-    </div>
-  );
+  return sharedDatabase;
 }
 
-function PlanBlock({ plan }: { plan: QueryPlan }) {
+function StatementBlockList({ statements }: { statements: StatementResult[] }) {
   return (
-    <div
-      data-testid="plan-result"
-      className="rounded border border-violet-800 bg-violet-950/30 p-3 text-sm"
-    >
-      <div className="font-semibold text-violet-300">
-        Query plan · {plan.nodes.length} node{plan.nodes.length === 1 ? "" : "s"} · SQLite{" "}
-        {plan.sqliteVersion}
-      </div>
-      <div className="mt-1 text-neutral-400">raw output preserved below the tree</div>
-      <ul className="mt-2 space-y-1 font-mono text-neutral-200">
-        {plan.nodes.map((n) => (
-          <li key={n.id} data-testid={`plan-node-${n.id}`}>
-            <span className="text-violet-300">#{n.id}</span>{" "}
-            <span className="text-sky-300">{n.operation}</span>
-            {n.table ? <span className="text-neutral-100"> {n.table}</span> : null}
-            {n.index ? <span className="text-emerald-300"> USING {n.index}</span> : null}
-            {n.tags.length > 0 ? (
-              <span className="text-amber-300"> [{n.tags.join(", ")}]</span>
-            ) : null}
-            <span className="text-neutral-500"> — {n.detail}</span>
-          </li>
-        ))}
-      </ul>
-      <pre className="mt-2 overflow-x-auto text-neutral-500">
-        {plan.raw.map((r) => `${r.id}|${r.parent}|${r.detail}`).join("\n")}
-      </pre>
-    </div>
-  );
-}
-
-function TabBlockedScreen({ onRetry }: { onRetry: () => void }) {
-  return (
-    <div
-      className="flex min-h-screen flex-col items-center justify-center gap-4 bg-neutral-950 px-6 text-center text-neutral-100"
-      data-testid="tab-blocked"
-    >
-      <h1 className="text-lg font-semibold">Already open in another tab</h1>
-      <p className="max-w-md text-sm text-neutral-400">
-        SQL Playground keeps databases in browser storage that only one tab may use at a time. Close
-        the other tab, then retry.
-      </p>
-      <button
-        type="button"
-        data-testid="tab-retry"
-        onClick={onRetry}
-        className="rounded bg-sky-700 px-4 py-2 font-medium text-white hover:bg-sky-600"
-      >
-        Retry
-      </button>
-    </div>
+    <>
+      {statements.map((r, i) => (
+        <StatementBlock key={i} result={r} index={i} />
+      ))}
+    </>
   );
 }
 
@@ -172,10 +63,16 @@ type TabLockState = "pending" | "owned" | "blocked";
 
 export default function App() {
   const managerRef = useRef<WorkerManager | null>(null);
+  const databaseRef = useRef<DatabaseService | null>(null);
   const [tabLock, setTabLock] = useState<TabLockState>("pending");
   const [lockUnsupported, setLockUnsupported] = useState(false);
   const [status, setStatus] = useState<WorkerStatus | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
+  const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [dbBusy, setDbBusy] = useState(false);
+  const [dbOpError, setDbOpError] = useState<string | null>(null);
+  const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
   const [sql, setSql] = useState(DEFAULT_SQL);
   const [response, setResponse] = useState<ExecutionResponse | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
@@ -188,10 +85,10 @@ export default function App() {
   const [exportInfo, setExportInfo] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
 
-  if (!managerRef.current) {
-    managerRef.current = getSharedManager();
-  }
+  if (!managerRef.current) managerRef.current = getSharedManager();
+  if (!databaseRef.current) databaseRef.current = getSharedDatabase();
   const manager = managerRef.current;
+  const database = databaseRef.current;
 
   // Tab guard first: never install the VFS or init the worker without the lock.
   useEffect(() => {
@@ -210,20 +107,21 @@ export default function App() {
     };
   }, []);
 
-  // Init only once the tab owns the storage.
+  // Foundation startup: init → reconcile → ensure a database → open it.
   useEffect(() => {
     if (tabLock !== "owned") return;
     let cancelled = false;
-    manager
-      .init()
-      .then((s) => {
-        if (!cancelled) {
-          setStatus(s);
-          setInitError(null);
-        }
+    database
+      .startup()
+      .then((result: StartupResult) => {
+        if (cancelled) return;
+        setStatus(result.status);
+        setDatabases(result.databases);
+        setActiveId(result.activeId);
+        setInitError(null);
       })
       .catch((err: unknown) => {
-        // A restart may cancel the very first init; its own restart() resolves status.
+        // A restart may cancel the very first startup; restart() resolves its own.
         if (err instanceof Error && err.name === "CancelledError") return;
         if (!cancelled) {
           setInitError(err instanceof Error ? err.message : String(err));
@@ -232,7 +130,47 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [tabLock, manager]);
+  }, [tabLock, database]);
+
+  // Quota / persistence display (plan §5.5).
+  useEffect(() => {
+    if (tabLock !== "owned") return;
+    let cancelled = false;
+    getStorageInfo().then((info) => {
+      if (!cancelled) setStorageInfo(info);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tabLock]);
+
+  const refreshDatabases = useCallback(async () => {
+    const [list, freshStatus] = await Promise.all([database.listDatabases(), manager.status()]);
+    setDatabases(list);
+    setStatus(freshStatus);
+    setActiveId(manager.activeFilename ? idFromDbFileName(manager.activeFilename) : null);
+  }, [database, manager]);
+
+  const runDbOp = useCallback(
+    async (op: () => Promise<unknown>) => {
+      setDbBusy(true);
+      setDbOpError(null);
+      try {
+        await op();
+        await refreshDatabases();
+      } catch (err) {
+        if (err instanceof DbOperationError) {
+          const guidance = describeDbError(err.code, err.message);
+          setDbOpError(`${guidance.message} ${guidance.nextStep}`);
+        } else {
+          setDbOpError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        setDbBusy(false);
+      }
+    },
+    [refreshDatabases],
+  );
 
   const retryLock = useCallback(async () => {
     setTabLock("pending");
@@ -249,7 +187,7 @@ export default function App() {
     setRunning(true);
     setRunError(null);
     try {
-      const res = await manager.execute(sql);
+      const res = await database.execute(sql);
       setResponse(res);
     } catch (err) {
       setResponse(null);
@@ -257,13 +195,13 @@ export default function App() {
     } finally {
       setRunning(false);
     }
-  }, [manager, sql]);
+  }, [database, sql]);
 
   const explain = useCallback(async () => {
     setExplaining(true);
     setPlanError(null);
     try {
-      const p = await manager.explain(sql);
+      const p = await database.explain(sql);
       setPlan(p);
     } catch (err) {
       setPlan(null);
@@ -271,7 +209,7 @@ export default function App() {
     } finally {
       setExplaining(false);
     }
-  }, [manager, sql]);
+  }, [database, sql]);
 
   const restartWorker = useCallback(async () => {
     setRestarting(true);
@@ -309,6 +247,11 @@ export default function App() {
     }
   }, [manager]);
 
+  const requestPersist = useCallback(async () => {
+    await requestPersistentStorage();
+    setStorageInfo(await getStorageInfo());
+  }, []);
+
   const runOnKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
@@ -320,10 +263,12 @@ export default function App() {
     return <TabBlockedScreen onRetry={() => void retryLock()} />;
   }
 
+  const activeDatabase = databases.find((d) => d.id === activeId) ?? null;
+
   return (
-    <div className="flex min-h-screen flex-col bg-neutral-950 text-neutral-100">
+    <div className="flex h-screen flex-col bg-neutral-950 text-neutral-100">
       <header className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
-        <h1 className="text-base font-semibold tracking-tight">SQL Playground · Week 2 PoC</h1>
+        <h1 className="text-base font-semibold tracking-tight">SQL Playground</h1>
         <div className="flex items-center gap-3 text-xs" data-testid="status-bar">
           {tabLock === "pending" ? (
             <span data-testid="lock-pending" className="text-neutral-500">
@@ -377,121 +322,157 @@ export default function App() {
         </div>
       </header>
 
-      <main className="grid flex-1 grid-cols-2 gap-0 overflow-hidden">
-        <section className="flex min-h-0 flex-col border-r border-neutral-800">
-          <div className="flex items-center justify-between border-b border-neutral-800 px-3 py-2 text-xs text-neutral-400">
-            <span>SQL editor</span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                data-testid="restart-worker"
-                onClick={() => void restartWorker()}
-                disabled={restarting || tabLock !== "owned"}
-                className="rounded bg-neutral-700 px-2 py-1.5 font-medium text-neutral-100 hover:bg-neutral-600 disabled:opacity-40"
-              >
-                {restarting ? "Restarting…" : "Restart worker"}
-              </button>
-              <button
-                type="button"
-                data-testid="export-button"
-                onClick={() => void exportDb()}
-                disabled={exporting || !status}
-                className="rounded bg-neutral-700 px-2 py-1.5 font-medium text-neutral-100 hover:bg-neutral-600 disabled:opacity-40"
-              >
-                {exporting ? "Exporting…" : "Export"}
-              </button>
-              <button
-                type="button"
-                data-testid="explain-button"
-                onClick={() => void explain()}
-                disabled={explaining || running || !status}
-                className="rounded bg-violet-700 px-2 py-1.5 font-medium text-white hover:bg-violet-600 disabled:opacity-40"
-              >
-                {explaining ? "Explaining…" : "Explain"}
-              </button>
-              <button
-                type="button"
-                data-testid="run-button"
-                onClick={() => void run()}
-                disabled={running || !status}
-                className="rounded bg-sky-700 px-3 py-1.5 font-medium text-white hover:bg-sky-600 disabled:opacity-40"
-              >
-                {running ? "Running…" : "Run (⌘↵)"}
-              </button>
-            </div>
-          </div>
-          <textarea
-            data-testid="sql-input"
-            value={sql}
-            onChange={(e) => setSql(e.target.value)}
-            onKeyDown={runOnKeyDown}
-            spellCheck={false}
-            className="min-h-0 flex-1 resize-none bg-neutral-950 p-3 font-mono text-sm text-neutral-100 outline-none"
+      <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)_320px] overflow-hidden">
+        {/* Explorer sidebar (plan §5.1) */}
+        <aside className="min-h-0 border-r border-neutral-800">
+          <DatabaseExplorer
+            databases={databases}
+            activeId={activeId}
+            busy={dbBusy || tabLock !== "owned"}
+            error={dbOpError}
+            storageInfo={storageInfo}
+            onOpen={(id) => void runDbOp(() => database.openDatabase(id))}
+            onCreate={(name) => void runDbOp(() => database.createDatabase(name))}
+            onRename={(id, name) => void runDbOp(() => database.renameDatabase(id, name))}
+            onDelete={(id) => void runDbOp(() => database.deleteDatabase(id))}
+            onRequestPersistence={() => void requestPersist()}
           />
-        </section>
+        </aside>
 
-        <section className="flex min-h-0 flex-col overflow-hidden">
-          <div className="border-b border-neutral-800 px-3 py-2 text-xs text-neutral-400">
-            Results
-            {restartMs !== null && (
-              <span className="ml-2 text-emerald-400" data-testid="restart-ms">
-                {restartMs.toFixed(0)} ms
-              </span>
-            )}
-            {response && (
-              <span className="ml-2 text-neutral-500">
-                {response.statements.length} statement
-                {response.statements.length === 1 ? "" : "s"} · {response.totalEngineMs.toFixed(2)}{" "}
-                ms total
-                {response.inTransaction ? (
-                  <span className="ml-2 text-amber-400" data-testid="open-transaction">
-                    open transaction
-                  </span>
-                ) : null}
-                {response.rolledBackBySqlite ? (
-                  <span className="ml-2 text-orange-400" data-testid="sqlite-rolled-back">
-                    SQLite rolled back your transaction
+        {/* Center: editor over results */}
+        <div className="grid min-h-0 grid-rows-2">
+          <section className="flex min-h-0 flex-col border-b border-neutral-800">
+            <div className="flex items-center justify-between border-b border-neutral-800 px-3 py-2 text-xs text-neutral-400">
+              <span>
+                SQL editor
+                {activeDatabase ? (
+                  <span className="ml-2 text-neutral-500">
+                    · <span className="text-neutral-300">{activeDatabase.name}</span>
                   </span>
                 ) : null}
               </span>
-            )}
-            {exportInfo && (
-              <span className="ml-2 text-neutral-500" data-testid="export-result">
-                {exportInfo}
-              </span>
-            )}
-          </div>
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" data-testid="results">
-            {runError && (
-              <div
-                className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
-                data-testid="run-error"
-              >
-                {runError}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  data-testid="restart-worker"
+                  onClick={() => void restartWorker()}
+                  disabled={restarting || tabLock !== "owned"}
+                  className="rounded bg-neutral-700 px-2 py-1.5 font-medium text-neutral-100 hover:bg-neutral-600 disabled:opacity-40"
+                >
+                  {restarting ? "Restarting…" : "Restart worker"}
+                </button>
+                <button
+                  type="button"
+                  data-testid="export-button"
+                  onClick={() => void exportDb()}
+                  disabled={exporting || !status}
+                  className="rounded bg-neutral-700 px-2 py-1.5 font-medium text-neutral-100 hover:bg-neutral-600 disabled:opacity-40"
+                >
+                  {exporting ? "Exporting…" : "Export"}
+                </button>
+                <button
+                  type="button"
+                  data-testid="explain-button"
+                  onClick={() => void explain()}
+                  disabled={explaining || running || !status}
+                  className="rounded bg-violet-700 px-2 py-1.5 font-medium text-white hover:bg-violet-600 disabled:opacity-40"
+                >
+                  {explaining ? "Explaining…" : "Explain"}
+                </button>
+                <button
+                  type="button"
+                  data-testid="run-button"
+                  onClick={() => void run()}
+                  disabled={running || !status}
+                  className="rounded bg-sky-700 px-3 py-1.5 font-medium text-white hover:bg-sky-600 disabled:opacity-40"
+                >
+                  {running ? "Running…" : "Run (⌘↵)"}
+                </button>
               </div>
-            )}
-            {planError && (
-              <div
-                className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
-                data-testid="plan-error"
-              >
-                explain failed: {planError}
-              </div>
-            )}
-            {plan && <PlanBlock plan={plan} />}
-            {!runError && !plan && !response && (
-              <p className="text-sm text-neutral-500">
-                Run SQL to see per-statement results, timing, and transaction state. Explain parses
-                the query plan in the worker (Rust wasm or TS fallback). Databases persist in OPFS
-                across reloads when available.
-              </p>
-            )}
-            {response?.statements.map((r, i) => (
-              <StatementBlock key={i} result={r} index={i} />
-            ))}
-          </div>
-        </section>
-      </main>
+            </div>
+            <textarea
+              data-testid="sql-input"
+              value={sql}
+              onChange={(e) => setSql(e.target.value)}
+              onKeyDown={runOnKeyDown}
+              spellCheck={false}
+              className="min-h-0 flex-1 resize-none bg-neutral-950 p-3 font-mono text-sm text-neutral-100 outline-none"
+            />
+          </section>
+
+          <section className="flex min-h-0 flex-col overflow-hidden">
+            <div className="border-b border-neutral-800 px-3 py-2 text-xs text-neutral-400">
+              Results
+              {restartMs !== null && (
+                <span className="ml-2 text-emerald-400" data-testid="restart-ms">
+                  {restartMs.toFixed(0)} ms
+                </span>
+              )}
+              {response && (
+                <span className="ml-2 text-neutral-500">
+                  {response.statements.length} statement
+                  {response.statements.length === 1 ? "" : "s"} ·{" "}
+                  {response.totalEngineMs.toFixed(2)} ms total
+                  {response.inTransaction ? (
+                    <span className="ml-2 text-amber-400" data-testid="open-transaction">
+                      open transaction
+                    </span>
+                  ) : null}
+                  {response.rolledBackBySqlite ? (
+                    <span className="ml-2 text-orange-400" data-testid="sqlite-rolled-back">
+                      SQLite rolled back your transaction
+                    </span>
+                  ) : null}
+                </span>
+              )}
+              {exportInfo && (
+                <span className="ml-2 text-neutral-500" data-testid="export-result">
+                  {exportInfo}
+                </span>
+              )}
+            </div>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" data-testid="results">
+              {runError && (
+                <div
+                  className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
+                  data-testid="run-error"
+                >
+                  {runError}
+                </div>
+              )}
+              {!runError && !response && (
+                <p className="text-sm text-neutral-500">
+                  Run SQL to see per-statement results, timing, and transaction state. Explain
+                  parses the query plan in the worker (Rust wasm or TS fallback). Databases persist
+                  in OPFS across reloads when available.
+                </p>
+              )}
+              {response && <StatementBlockList statements={response.statements} />}
+            </div>
+          </section>
+        </div>
+
+        {/* Analysis panel */}
+        <aside className="min-h-0 space-y-3 overflow-y-auto border-l border-neutral-800 p-3">
+          <div className="text-xs font-medium text-neutral-400">Analysis</div>
+          {planError && (
+            <div
+              className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
+              data-testid="plan-error"
+            >
+              explain failed: {planError}
+            </div>
+          )}
+          {plan ? (
+            <PlanPanel plan={plan} />
+          ) : !planError ? (
+            <p className="text-sm text-neutral-500">
+              Run Explain to see how SQLite processes the query: scans, searches, and index usage,
+              with the raw plan output preserved.
+            </p>
+          ) : null}
+        </aside>
+      </div>
 
       <footer className="border-t border-neutral-800 px-4 py-2 text-[11px] text-neutral-500">
         Browser-only SQLite · no server · statement policy blocks ATTACH and VACUUM INTO · tab guard

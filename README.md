@@ -42,14 +42,16 @@ bundle); `E2E_BROWSER=firefox` selects the browser. CI runs
 
 ```
 apps/web/          React + TypeScript application
-  src/shared/      Typed contracts (plan §5.3)
-  src/services/    database (execute, explain, policy), worker manager,
-                   toolkit (PlanToolkit: Rust wasm + TS fallback), storage (tab guard)
-  src/workers/     sqlite.worker.ts (WASM + opfs-sahpool + PlanToolkit)
+  src/shared/      Typed contracts (plan §5.3) + error model (DB_ERROR_CODES)
+  src/services/    database (DatabaseService, execute, explain, policy), worker
+                   manager, toolkit (PlanToolkit: Rust wasm + TS fallback),
+                   storage (metadata DB, reconcile, quota, tab guard)
+  src/workers/     sqlite.worker.ts (WASM + opfs-sahpool + PlanToolkit + file ops)
+  src/features/    database-explorer, query-results, query-analysis components
   src/generated/   wasm-bindgen output (git-ignored, built by pnpm build:wasm)
-  e2e/             Playwright specs (PoC + Week 2)
+  e2e/             Playwright specs (PoC + Week 2 + Week 3)
 crates/query-analyzer/  Rust plan parser + diff (ADR-002, behind PlanToolkit)
-docs/adr/          ADR-001 … ADR-005
+docs/adr/          ADR-001 … ADR-006
 ```
 
 ## CI
@@ -144,3 +146,25 @@ OPFS is unavailable the app falls back to an in-memory database with a visible
 
 **Result: GO** — proceed to Week 3 (foundation and persistence core), with
 the Safari matrix run still owed before release.
+
+### Week 3
+
+- [x] Multi-database worker protocol: `open-db`/`list-files`/`delete-file`,
+      `init.openFile`; Worker Manager re-opens the active file after every
+      restart/crash (ADR-003 + ADR-004 recovery)
+- [x] Storage Service: IndexedDB metadata schema v1 (`databases`/`history`/
+      `preferences`), database lifecycle (create/rename/two-phase delete with
+      rollback on failure), startup reconciliation — orphan files →
+      "Recovered database", missing files → `missing-file`, interrupted
+      deletes completed, foreign files ignored (scenario 24, ADR-005/006)
+- [x] Quota/availability detection: OPFS support, `navigator.storage`
+      usage/persist, `requestPersistentStorage` (never silent)
+- [x] Error model: `DB_ERROR_CODES` with title/message/nextStep guidance
+      (NFR-07), `DbOperationError` rejections, React `ErrorBoundary` with
+      dismiss/reload recovery actions
+- [x] Workspace layout: 3-column shell — database explorer (create/rename/
+      delete with confirm, status badges, storage footer) | editor + results |
+      analysis panel; tab guard and existing testids preserved
+- [x] ADR-006 written; ADR-005 reconciliation status updated
+- [x] 118 unit tests + 12 e2e tests green (dev + production build)
+- [ ] Safari 17+ run (pending macOS; ADR-001/002/005 note it)
