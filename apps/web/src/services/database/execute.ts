@@ -6,7 +6,13 @@ import type {
   StatementSpan,
 } from "../../shared/contracts";
 import type { Database, Sqlite3Static } from "@sqlite.org/sqlite-wasm";
+import { byteOffsetToJsIndex } from "../../shared/textPosition";
 import { checkPolicy, isDmlKeyword, leadingKeyword } from "./policy";
+
+// Re-exported for existing call sites/tests; the implementation lives in
+// shared/textPosition so UI code can map error offsets without importing
+// the execution engine.
+export { byteOffsetToJsIndex };
 
 export interface ExecuteOptions {
   maxRows?: number;
@@ -39,33 +45,6 @@ function toSqlValue(
   if (v instanceof ArrayBuffer) return new Uint8Array(v);
   if (v instanceof Int8Array) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
   return v;
-}
-
-/**
- * Convert a UTF-8 byte offset in `sql` to a JS string index (UTF-16 code units).
- * Mid-character offsets map to the character that contains them.
- */
-export function byteOffsetToJsIndex(sql: string, byteOffset: number): number {
-  if (byteOffset <= 0) return 0;
-  let bytes = 0;
-  for (let i = 0; i < sql.length; i += 1) {
-    const code = sql.charCodeAt(i);
-    let charBytes: number;
-    if (code < 0x80) charBytes = 1;
-    else if (code < 0x800) charBytes = 2;
-    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < sql.length) {
-      charBytes = 4;
-      // Surrogate pair: treat as one unit for offset math, advance past low surrogate.
-      if (byteOffset < bytes + charBytes) return i;
-      bytes += charBytes;
-      i += 1;
-      continue;
-    } else charBytes = 3;
-
-    if (byteOffset < bytes + charBytes) return i;
-    bytes += charBytes;
-  }
-  return sql.length;
 }
 
 function spanFor(sql: string, startByte: number, endByte: number): StatementSpan {

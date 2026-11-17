@@ -47,11 +47,12 @@ apps/web/          React + TypeScript application
                    manager, toolkit (PlanToolkit: Rust wasm + TS fallback),
                    storage (metadata DB, reconcile, quota, tab guard)
   src/workers/     sqlite.worker.ts (WASM + opfs-sahpool + PlanToolkit + file ops)
-  src/features/    database-explorer, query-results, query-analysis components
+  src/features/    sql-editor (CodeMirror 6), database-explorer, query-results,
+                   query-analysis components
   src/generated/   wasm-bindgen output (git-ignored, built by pnpm build:wasm)
-  e2e/             Playwright specs (PoC + Week 2 + Week 3)
+  e2e/             Playwright specs (PoC + Week 2 + Week 3 + Week 4)
 crates/query-analyzer/  Rust plan parser + diff (ADR-002, behind PlanToolkit)
-docs/adr/          ADR-001 … ADR-006
+docs/adr/          ADR-001 … ADR-007
 ```
 
 ## CI
@@ -167,4 +168,24 @@ the Safari matrix run still owed before release.
       analysis panel; tab guard and existing testids preserved
 - [x] ADR-006 written; ADR-005 reconciliation status updated
 - [x] 118 unit tests + 12 e2e tests green (dev + production build)
+- [ ] Safari 17+ run (pending macOS; ADR-001/002/005 note it)
+
+### Week 4
+
+- [x] CodeMirror 6 editor: SQL syntax highlighting, line numbers, wrapping;
+      Mod-Enter runs the selection (or whole document), Mod-Shift-Enter
+      explains; Run button label flips to "Run selection"; no autocomplete
+      (plan Future) and Tab left unbound so keyboard users can exit (NFR-11)
+- [x] Execution contract UI: sequential per-statement results with
+      stop-on-error, engine timing per statement and in total, transaction-
+      state indicator with Commit/Rollback actions, Cancel while running
+- [x] SQL error display: statement-relative `sqlite3_error_offset` mapped to
+      document line/column, caret under the token, `.cm-error-mark` underline
+      cleared on edit (plan §5.2 rule 6)
+- [x] Results grid: virtualized 10-row window over the 1,000-row cap with the
+      ARIA grid pattern — `aria-rowcount`/`aria-colcount`, roving tabindex,
+      arrow/Page/Home/End navigation — plus the `role="status"` truncation
+      notice (NFR-11, audited Week 9)
+- [x] ADR-004 restart with an open transaction surfaces the rollback notice
+- [x] ADR-007 written; 152 unit tests + 19 e2e tests green
 - [ ] Safari 17+ run (pending macOS; ADR-001/002/005 note it)

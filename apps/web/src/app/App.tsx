@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TabBlockedScreen } from "./TabBlockedScreen";
 import { DatabaseExplorer } from "../features/database-explorer/DatabaseExplorer";
 import { PlanPanel } from "../features/query-analysis/PlanPanel";
 import { StatementBlock } from "../features/query-results/StatementBlock";
+import { SqlEditor, type SqlSelection } from "../features/sql-editor/SqlEditor";
 import { DatabaseService, type StartupResult } from "../services/database/databaseService";
 import {
   getStorageInfo,
@@ -14,6 +15,12 @@ import { StorageService } from "../services/storage/storageService";
 import { createIdbMetadataStore } from "../services/storage/metadataDb";
 import { acquireTabLock, retryTabLock } from "../services/storage/tabGuard";
 import { DbOperationError, describeDbError } from "../shared/errors";
+import {
+  byteOffsetToJsIndex,
+  computeErrorMark,
+  indexToLineColumn,
+  type LineColumn,
+} from "../shared/textPosition";
 import { WorkerManager } from "../services/worker/workerManager";
 import type {
   DatabaseInfo,
@@ -23,7 +30,7 @@ import type {
   WorkerStatus,
 } from "../shared/contracts";
 
-const DEFAULT_SQL = `-- Run SQL (⌘/Ctrl+Enter), or Explain to inspect the query plan
+const DEFAULT_SQL = `-- ⌘/Ctrl+Enter runs the selection or the whole script; ⇧⌘/Ctrl+Enter explains
 CREATE TABLE IF NOT EXISTS notes (
   id INTEGER PRIMARY KEY,
   body TEXT NOT NULL
@@ -49,11 +56,27 @@ function getSharedDatabase(): DatabaseService {
   return sharedDatabase;
 }
 
-function StatementBlockList({ statements }: { statements: StatementResult[] }) {
+interface ErrorPosition {
+  index: number;
+  position: LineColumn | null;
+}
+
+function StatementBlockList({
+  statements,
+  errorPosition,
+}: {
+  statements: StatementResult[];
+  errorPosition: ErrorPosition | null;
+}) {
   return (
     <>
       {statements.map((r, i) => (
-        <StatementBlock key={i} result={r} index={i} />
+        <StatementBlock
+          key={i}
+          result={r}
+          index={i}
+          position={errorPosition && errorPosition.index === i ? errorPosition.position : undefined}
+        />
       ))}
     </>
   );
@@ -84,6 +107,13 @@ export default function App() {
   const [restarting, setRestarting] = useState(false);
   const [exportInfo, setExportInfo] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [selection, setSelection] = useState<SqlSelection | null>(null);
+  const [errorMark, setErrorMark] = useState<{ from: number; to: number } | null>(null);
+  // Snapshot of what was executed, so error line/column stays anchored to the
+  // document (or selection) that produced the results.
+  const [runContext, setRunContext] = useState<{ doc: string; docStart: number } | null>(null);
+  const [restartTxNotice, setRestartTxNotice] = useState(false);
+  const [txBusy, setTxBusy] = useState(false);
 
   if (!managerRef.current) managerRef.current = getSharedManager();
   if (!databaseRef.current) databaseRef.current = getSharedDatabase();
@@ -183,25 +213,61 @@ export default function App() {
     }
   }, []);
 
+  // Plan §5.2 rule 6: the failing statement's document position, derived from
+  // the run snapshot (SQLite's offset is statement-relative, plan §5.2 rule 1).
+  const errorPosition = useMemo<ErrorPosition | null>(() => {
+    if (!response || !runContext) return null;
+    for (let i = 0; i < response.statements.length; i += 1) {
+      const s = response.statements[i];
+      if (s.kind !== "error") continue;
+      if (s.error.offset === undefined || s.error.offset < 0) return { index: i, position: null };
+      const rel = byteOffsetToJsIndex(s.span.text, s.error.offset);
+      const abs = runContext.docStart + s.span.start + rel;
+      return { index: i, position: indexToLineColumn(runContext.doc, abs) };
+    }
+    return null;
+  }, [response, runContext]);
+
+  const handleSqlChange = useCallback((next: string) => {
+    setSql(next);
+    setErrorMark(null); // the mark tracks the last run; editing invalidates it.
+  }, []);
+
   const run = useCallback(async () => {
+    const sel = selection;
+    const useSelection = sel !== null && sel.text.trim() !== "";
+    const script = useSelection && sel ? sel.text : sql;
+    const docStart = useSelection && sel ? sel.from : 0;
     setRunning(true);
     setRunError(null);
+    setRestartTxNotice(false);
     try {
-      const res = await database.execute(sql);
+      const res = await database.execute(script);
       setResponse(res);
+      setRunContext({ doc: sql, docStart });
+      const err = res.statements.find((s) => s.kind === "error");
+      setErrorMark(
+        err && err.kind === "error" && err.error.offset !== undefined
+          ? computeErrorMark(script, docStart, err.span, err.error.offset)
+          : null,
+      );
     } catch (err) {
       setResponse(null);
+      setRunContext(null);
+      setErrorMark(null);
       setRunError(err instanceof Error ? err.message : String(err));
     } finally {
       setRunning(false);
     }
-  }, [database, sql]);
+  }, [database, sql, selection]);
 
   const explain = useCallback(async () => {
+    const sel = selection;
+    const script = sel !== null && sel.text.trim() !== "" ? sel.text : sql;
     setExplaining(true);
     setPlanError(null);
     try {
-      const p = await database.explain(sql);
+      const p = await database.explain(script);
       setPlan(p);
     } catch (err) {
       setPlan(null);
@@ -209,9 +275,31 @@ export default function App() {
     } finally {
       setExplaining(false);
     }
-  }, [database, sql]);
+  }, [database, sql, selection]);
+
+  // Open-transaction actions (plan §5.2 rule 6): nothing rolls back silently.
+  const runTransactionCommand = useCallback(
+    async (command: "COMMIT" | "ROLLBACK") => {
+      setTxBusy(true);
+      setRunError(null);
+      setRestartTxNotice(false);
+      try {
+        const script = `${command};`;
+        const res = await database.execute(script);
+        setResponse(res);
+        setRunContext({ doc: script, docStart: 0 });
+        setErrorMark(null); // synthetic script: never mark the editor with it.
+      } catch (err) {
+        setRunError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setTxBusy(false);
+      }
+    },
+    [database],
+  );
 
   const restartWorker = useCallback(async () => {
+    const hadOpenTransaction = response?.inTransaction ?? false;
     setRestarting(true);
     setInitError(null);
     setRestartMs(null); // reappearing = restart finished (e2e waits on it)
@@ -221,6 +309,11 @@ export default function App() {
       setRestartMs(performance.now() - start);
       setStatus(s);
       setResponse(null);
+      setRunContext(null);
+      setErrorMark(null);
+      // ADR-004: SQLite rolls back an open transaction when the connection
+      // dies — say so instead of losing the indicator silently.
+      setRestartTxNotice(hadOpenTransaction);
       // runError is kept: an in-flight run surfaces "Query cancelled; worker
       // restarted." here (ADR-004) and must not be swallowed by this restart.
     } catch (err) {
@@ -228,7 +321,7 @@ export default function App() {
     } finally {
       setRestarting(false);
     }
-  }, [manager]);
+  }, [manager, response]);
 
   const exportDb = useCallback(async () => {
     setExporting(true);
@@ -252,18 +345,12 @@ export default function App() {
     setStorageInfo(await getStorageInfo());
   }, []);
 
-  const runOnKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      e.preventDefault();
-      void run();
-    }
-  };
-
   if (tabLock === "blocked") {
     return <TabBlockedScreen onRetry={() => void retryLock()} />;
   }
 
   const activeDatabase = databases.find((d) => d.id === activeId) ?? null;
+  const hasSelection = selection !== null && selection.text.trim() !== "";
 
   return (
     <div className="flex h-screen flex-col bg-neutral-950 text-neutral-100">
@@ -350,6 +437,9 @@ export default function App() {
                     · <span className="text-neutral-300">{activeDatabase.name}</span>
                   </span>
                 ) : null}
+                <span className="ml-2 text-neutral-600">
+                  ⌘/Ctrl+Enter run · ⇧⌘/Ctrl+Enter explain
+                </span>
               </span>
               <div className="flex items-center gap-2">
                 <button
@@ -379,6 +469,17 @@ export default function App() {
                 >
                   {explaining ? "Explaining…" : "Explain"}
                 </button>
+                {running && (
+                  <button
+                    type="button"
+                    data-testid="cancel-button"
+                    onClick={() => void restartWorker()}
+                    disabled={restarting}
+                    className="rounded bg-red-800 px-2 py-1.5 font-medium text-white hover:bg-red-700 disabled:opacity-40"
+                  >
+                    Cancel
+                  </button>
+                )}
                 <button
                   type="button"
                   data-testid="run-button"
@@ -386,18 +487,20 @@ export default function App() {
                   disabled={running || !status}
                   className="rounded bg-sky-700 px-3 py-1.5 font-medium text-white hover:bg-sky-600 disabled:opacity-40"
                 >
-                  {running ? "Running…" : "Run (⌘↵)"}
+                  {running ? "Running…" : hasSelection ? "Run selection (⌘↵)" : "Run (⌘↵)"}
                 </button>
               </div>
             </div>
-            <textarea
-              data-testid="sql-input"
-              value={sql}
-              onChange={(e) => setSql(e.target.value)}
-              onKeyDown={runOnKeyDown}
-              spellCheck={false}
-              className="min-h-0 flex-1 resize-none bg-neutral-950 p-3 font-mono text-sm text-neutral-100 outline-none"
-            />
+            <div className="min-h-0 flex-1">
+              <SqlEditor
+                value={sql}
+                onChange={handleSqlChange}
+                onRun={() => void run()}
+                onExplain={() => void explain()}
+                onSelectionChange={setSelection}
+                errorMark={errorMark}
+              />
+            </div>
           </section>
 
           <section className="flex min-h-0 flex-col overflow-hidden">
@@ -408,21 +511,47 @@ export default function App() {
                   {restartMs.toFixed(0)} ms
                 </span>
               )}
+              {restartTxNotice && (
+                <span className="ml-2 text-orange-300" data-testid="restart-transaction-notice">
+                  SQLite rolled back your open transaction (worker restarted)
+                </span>
+              )}
               {response && (
                 <span className="ml-2 text-neutral-500">
                   {response.statements.length} statement
                   {response.statements.length === 1 ? "" : "s"} ·{" "}
                   {response.totalEngineMs.toFixed(2)} ms total
-                  {response.inTransaction ? (
-                    <span className="ml-2 text-amber-400" data-testid="open-transaction">
-                      open transaction
-                    </span>
-                  ) : null}
-                  {response.rolledBackBySqlite ? (
-                    <span className="ml-2 text-orange-400" data-testid="sqlite-rolled-back">
-                      SQLite rolled back your transaction
-                    </span>
-                  ) : null}
+                </span>
+              )}
+              {response?.inTransaction && (
+                <span
+                  className="ml-2 inline-flex items-center gap-1.5"
+                  data-testid="open-transaction"
+                >
+                  <span className="text-amber-400">open transaction</span>
+                  <button
+                    type="button"
+                    data-testid="commit-button"
+                    onClick={() => void runTransactionCommand("COMMIT")}
+                    disabled={running || txBusy}
+                    className="rounded bg-amber-800 px-1.5 py-0.5 font-medium text-amber-100 hover:bg-amber-700 disabled:opacity-40"
+                  >
+                    Commit
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="rollback-button"
+                    onClick={() => void runTransactionCommand("ROLLBACK")}
+                    disabled={running || txBusy}
+                    className="rounded bg-neutral-700 px-1.5 py-0.5 font-medium text-neutral-100 hover:bg-neutral-600 disabled:opacity-40"
+                  >
+                    Rollback
+                  </button>
+                </span>
+              )}
+              {response?.rolledBackBySqlite && (
+                <span className="ml-2 text-orange-400" data-testid="sqlite-rolled-back">
+                  SQLite rolled back your transaction
                 </span>
               )}
               {exportInfo && (
@@ -447,7 +576,12 @@ export default function App() {
                   in OPFS across reloads when available.
                 </p>
               )}
-              {response && <StatementBlockList statements={response.statements} />}
+              {response && (
+                <StatementBlockList
+                  statements={response.statements}
+                  errorPosition={errorPosition}
+                />
+              )}
             </div>
           </section>
         </div>
