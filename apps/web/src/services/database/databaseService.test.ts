@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { ExecutionResponse, QueryPlan, WorkerStatus } from "../../shared/contracts";
+import type {
+  DatabaseSchema,
+  ExecutionResponse,
+  QueryPlan,
+  TablePage,
+  WorkerStatus,
+} from "../../shared/contracts";
 import { DatabaseService, DEFAULT_DATABASE_NAME, type DatabaseBackend } from "./databaseService";
+import { SAMPLE_DATABASE_NAME } from "./sampleDatabase";
 import { StorageService } from "../storage/storageService";
 import { FakeStorageWorker, makeEntry, makeStore, dbFileName } from "../storage/storageTestSupport";
 
@@ -22,9 +29,21 @@ const FAKE_RESPONSE: ExecutionResponse = {
 };
 
 const FAKE_PLAN: QueryPlan = { nodes: [], raw: [], sqliteVersion: "3.54.1" };
+const FAKE_SCHEMA: DatabaseSchema = { tables: [], views: [] };
+const FAKE_TABLE_PAGE: TablePage = {
+  table: "t",
+  columns: [{ name: "id" }],
+  rows: [[1]],
+  totalRows: 1,
+  limit: 50,
+  offset: 0,
+};
 
-function makeBackend(overrides: Partial<WorkerStatus> = {}) {
-  const calls = { init: 0, status: 0, execute: 0, explain: 0 };
+function makeBackend(
+  overrides: Partial<WorkerStatus> = {},
+  executeResponse: ExecutionResponse = FAKE_RESPONSE,
+) {
+  const calls = { init: 0, status: 0, execute: 0, explain: 0, schema: 0, browse: 0 };
   const backend: DatabaseBackend = {
     init: async () => {
       calls.init += 1;
@@ -36,11 +55,19 @@ function makeBackend(overrides: Partial<WorkerStatus> = {}) {
     },
     execute: async () => {
       calls.execute += 1;
-      return FAKE_RESPONSE;
+      return executeResponse;
     },
     explain: async () => {
       calls.explain += 1;
       return FAKE_PLAN;
+    },
+    getSchema: async () => {
+      calls.schema += 1;
+      return FAKE_SCHEMA;
+    },
+    browseTable: async (table, page) => {
+      calls.browse += 1;
+      return { ...FAKE_TABLE_PAGE, table, limit: page.limit, offset: page.offset };
     },
   };
   return { backend, calls };
@@ -204,5 +231,56 @@ describe("DatabaseService lifecycle delegation", () => {
     expect(worker.activeFilename).toBe(dbFileName(second.id));
     const list = await service.listDatabases();
     expect(list.map((d) => d.id)).toEqual([second.id]);
+  });
+});
+
+describe("DatabaseService sample database and explorer delegation", () => {
+  it("creates the sample database by running the bundled script", async () => {
+    const { service, calls, worker, store } = makeService();
+
+    const info = await service.createSampleDatabase();
+
+    expect(info.name).toBe(SAMPLE_DATABASE_NAME);
+    expect(info.sample).toBe(true);
+    expect(calls.execute).toBe(1);
+    expect(worker.activeFilename).toBe(dbFileName(info.id));
+    expect(store.rows.get(info.id)?.sample).toBe(true);
+  });
+
+  it("rolls back a sample database when the script fails", async () => {
+    const failing: ExecutionResponse = {
+      statements: [
+        {
+          kind: "error",
+          sql: "SELECT broken;",
+          error: { code: "SQL_ERROR", message: "syntax error" },
+          span: { start: 0, end: 15, text: "SELECT broken;" },
+        },
+      ],
+      inTransaction: false,
+      totalEngineMs: 1,
+    };
+    const { backend, calls } = makeBackend({}, failing);
+    const worker = new FakeStorageWorker();
+    const store = makeStore();
+    const storage = new StorageService({ store, worker, now: () => 5000 });
+    const service = new DatabaseService({ backend, storage });
+
+    await expect(service.createSampleDatabase()).rejects.toThrow("syntax error");
+
+    expect(calls.execute).toBe(1);
+    expect((await service.listDatabases()).map((database) => database.sample)).not.toContain(true);
+  });
+
+  it("delegates schema reads and clamps table page values", async () => {
+    const { service, calls } = makeService();
+    await service.startup();
+
+    await service.getSchema();
+    const page = await service.browseTable("t", { limit: 9999, offset: -4 });
+
+    expect(calls.schema).toBe(1);
+    expect(calls.browse).toBe(1);
+    expect(page).toMatchObject({ limit: 500, offset: 0 });
   });
 });

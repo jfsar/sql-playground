@@ -1,4 +1,10 @@
-import type { ExecutionResponse, QueryPlan, WorkerStatus } from "../../shared/contracts";
+import type {
+  DatabaseSchema,
+  ExecutionResponse,
+  QueryPlan,
+  TablePage,
+  WorkerStatus,
+} from "../../shared/contracts";
 
 /** Every message carries a requestId; responses echo it (plan §5.4). */
 
@@ -10,7 +16,9 @@ export type WorkerRequest =
   | { type: "export"; requestId: string; filename?: string }
   | { type: "open-db"; requestId: string; filename: string }
   | { type: "list-files"; requestId: string }
-  | { type: "delete-file"; requestId: string; filename: string };
+  | { type: "delete-file"; requestId: string; filename: string }
+  | { type: "schema"; requestId: string }
+  | { type: "browse-table"; requestId: string; table: string; limit: number; offset: number };
 
 export type WorkerResponse =
   | { type: "ready"; requestId: string; status: WorkerStatus }
@@ -21,6 +29,8 @@ export type WorkerResponse =
   | { type: "opened"; requestId: string; filename: string; sizeBytes: number }
   | { type: "files"; requestId: string; files: string[] }
   | { type: "deleted"; requestId: string; filename: string; existed: boolean }
+  | { type: "schema-result"; requestId: string; schema: DatabaseSchema }
+  | { type: "table-page"; requestId: string; page: TablePage }
   | { type: "failed"; requestId: string; error: { code: string; message: string } };
 
 const RESPONSE_TYPES = new Set([
@@ -32,6 +42,8 @@ const RESPONSE_TYPES = new Set([
   "opened",
   "files",
   "deleted",
+  "schema-result",
+  "table-page",
   "failed",
 ]);
 

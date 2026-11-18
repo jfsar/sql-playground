@@ -8,14 +8,20 @@
  * React StrictMode's double mount cannot run startup twice.
  */
 
-import type {
-  DatabaseInfo,
-  ExecutionResponse,
-  QueryPlan,
-  WorkerStatus,
+import {
+  MAX_TABLE_PAGE_SIZE,
+  TABLE_PAGE_SIZE,
+  type DatabaseInfo,
+  type DatabaseSchema,
+  type ExecutionResponse,
+  type QueryPlan,
+  type TablePage,
+  type WorkerStatus,
 } from "../../shared/contracts";
+import { DbOperationError } from "../../shared/errors";
 import { dbFileName } from "../storage/reconcile";
 import type { StorageService } from "../storage/storageService";
+import { SAMPLE_DATABASE_NAME, SAMPLE_SCHEMA_SQL } from "./sampleDatabase";
 
 export const DEFAULT_DATABASE_NAME = "My database";
 
@@ -25,6 +31,8 @@ export interface DatabaseBackend {
   status(): Promise<WorkerStatus>;
   execute(sql: string, opts?: { maxRows?: number }): Promise<ExecutionResponse>;
   explain(sql: string): Promise<QueryPlan>;
+  getSchema(): Promise<DatabaseSchema>;
+  browseTable(table: string, page: { limit: number; offset: number }): Promise<TablePage>;
 }
 
 export interface StartupResult {
@@ -105,6 +113,31 @@ export class DatabaseService {
     return this.storage.createDatabase(name);
   }
 
+  /**
+   * Create a fresh database and populate it by running the bundled script
+   * through the execution contract (plan §7 Week 5). Any failing statement
+   * rolls the new database back so the list never keeps a half-built sample.
+   */
+  async createSampleDatabase(): Promise<DatabaseInfo> {
+    const info = await this.storage.createDatabase(SAMPLE_DATABASE_NAME, { sample: true });
+    try {
+      const response = await this.backend.execute(SAMPLE_SCHEMA_SQL);
+      const failure = response.statements.find((statement) => statement.kind === "error");
+      if (failure && failure.kind === "error") {
+        throw new DbOperationError(failure.error.code, failure.error.message);
+      }
+      // Reopen so sizeBytes/lastOpenedAt reflect the populated file.
+      return await this.storage.openDatabase(info.id);
+    } catch (err) {
+      try {
+        await this.deleteDatabase(info.id);
+      } catch (cleanupErr) {
+        console.warn("[sample] could not roll back the failed sample database:", cleanupErr);
+      }
+      throw err;
+    }
+  }
+
   openDatabase(id: string): Promise<DatabaseInfo> {
     return this.storage.openDatabase(id);
   }
@@ -138,5 +171,22 @@ export class DatabaseService {
 
   explain(sql: string): Promise<QueryPlan> {
     return this.backend.explain(sql);
+  }
+
+  /** Tables, views, columns, constraints, and indexes of the active database. */
+  getSchema(): Promise<DatabaseSchema> {
+    return this.backend.getSchema();
+  }
+
+  /** One LIMIT/OFFSET page of a table or view. */
+  browseTable(table: string, page: { limit?: number; offset?: number } = {}): Promise<TablePage> {
+    const requested = page.limit ?? TABLE_PAGE_SIZE;
+    const limit = Math.min(
+      MAX_TABLE_PAGE_SIZE,
+      Math.max(1, Number.isFinite(requested) ? Math.trunc(requested) : TABLE_PAGE_SIZE),
+    );
+    const requestedOffset = page.offset ?? 0;
+    const offset = Math.max(0, Number.isFinite(requestedOffset) ? Math.trunc(requestedOffset) : 0);
+    return this.backend.browseTable(table, { limit, offset });
   }
 }

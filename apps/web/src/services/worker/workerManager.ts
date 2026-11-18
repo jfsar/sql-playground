@@ -1,4 +1,10 @@
-import type { ExecutionResponse, QueryPlan, WorkerStatus } from "../../shared/contracts";
+import type {
+  DatabaseSchema,
+  ExecutionResponse,
+  QueryPlan,
+  TablePage,
+  WorkerStatus,
+} from "../../shared/contracts";
 import { isWorkerResponse, type WorkerRequest, type WorkerResponse } from "./protocol";
 
 interface Pending {
@@ -244,6 +250,42 @@ export class WorkerManager {
         throw new Error(`Unexpected status response: ${res.type}`);
       }
       return res.status;
+    });
+  }
+
+  /** Complete schema of the active database (plan §5.3). */
+  async getSchema(): Promise<DatabaseSchema> {
+    if (this.terminated) {
+      throw new Error("WorkerManager has been terminated");
+    }
+    await this.init();
+    return this.enqueue(async () => {
+      const res = await this.send({ type: "schema", requestId: this.nextRequestId() });
+      if (res.type !== "schema-result") {
+        throw new Error(`Unexpected schema response: ${res.type}`);
+      }
+      return res.schema;
+    });
+  }
+
+  /** One paged read of a table or view (plan §5.3). */
+  async browseTable(table: string, page: { limit: number; offset: number }): Promise<TablePage> {
+    if (this.terminated) {
+      throw new Error("WorkerManager has been terminated");
+    }
+    await this.init();
+    return this.enqueue(async () => {
+      const res = await this.send({
+        type: "browse-table",
+        requestId: this.nextRequestId(),
+        table,
+        limit: page.limit,
+        offset: page.offset,
+      });
+      if (res.type !== "table-page") {
+        throw new Error(`Unexpected browse-table response: ${res.type}`);
+      }
+      return res.page;
     });
   }
 

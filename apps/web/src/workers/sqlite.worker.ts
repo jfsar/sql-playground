@@ -1,8 +1,10 @@
 /// <reference lib="webworker" />
 import sqlite3InitModule from "@sqlite.org/sqlite-wasm";
 import type { Database, SAHPoolUtil, Sqlite3Static } from "@sqlite.org/sqlite-wasm";
+import { browseTable } from "../services/database/browse";
 import { executeScript } from "../services/database/execute";
 import { explainQuery } from "../services/database/explain";
+import { readSchema } from "../services/database/schema";
 import type { WorkerRequest, WorkerResponse } from "../services/worker/protocol";
 import { createPlanToolkit } from "../services/toolkit";
 import type { PlanToolkit } from "../services/toolkit/planToolkit";
@@ -187,6 +189,42 @@ function handleExplain(req: Extract<WorkerRequest, { type: "explain" }>): void {
   }
 }
 
+function handleSchema(req: Extract<WorkerRequest, { type: "schema" }>): void {
+  if (!db) {
+    fail(
+      req.requestId,
+      new Error("No database is open; open a database before reading its schema."),
+      "STORAGE_UNAVAILABLE",
+    );
+    return;
+  }
+  try {
+    post({ type: "schema-result", requestId: req.requestId, schema: readSchema(db) });
+  } catch (err) {
+    fail(req.requestId, err, "SQL_ERROR");
+  }
+}
+
+function handleBrowseTable(req: Extract<WorkerRequest, { type: "browse-table" }>): void {
+  if (!sqlite3 || !db) {
+    fail(
+      req.requestId,
+      new Error("No database is open; open a database before browsing tables."),
+      "STORAGE_UNAVAILABLE",
+    );
+    return;
+  }
+  try {
+    const page = browseTable(sqlite3, db, req.table, {
+      limit: req.limit,
+      offset: req.offset,
+    });
+    post({ type: "table-page", requestId: req.requestId, page });
+  } catch (err) {
+    fail(req.requestId, err, "SQL_ERROR");
+  }
+}
+
 async function handleOpenDb(req: Extract<WorkerRequest, { type: "open-db" }>): Promise<void> {
   try {
     const sizeBytes = await openDatabaseFile(req.filename);
@@ -268,6 +306,14 @@ globalThis.onmessage = (event: MessageEvent<WorkerRequest>) => {
   }
   if (req.type === "open-db") {
     void handleOpenDb(req);
+    return;
+  }
+  if (req.type === "schema") {
+    handleSchema(req);
+    return;
+  }
+  if (req.type === "browse-table") {
+    handleBrowseTable(req);
     return;
   }
   if (req.type === "list-files") {

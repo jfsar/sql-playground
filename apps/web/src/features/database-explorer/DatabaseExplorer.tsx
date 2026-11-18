@@ -12,6 +12,7 @@ interface DatabaseExplorerProps {
   storageInfo: StorageInfo | null;
   onOpen: (id: string) => void;
   onCreate: (name: string) => void;
+  onCreateSample: () => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onRequestPersistence: () => void;
@@ -89,6 +90,7 @@ export function DatabaseExplorer({
   storageInfo,
   onOpen,
   onCreate,
+  onCreateSample,
   onRename,
   onDelete,
   onRequestPersistence,
@@ -112,18 +114,30 @@ export function DatabaseExplorer({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="database-explorer">
+    <div className="flex min-h-0 flex-col" data-testid="database-explorer">
       <div className="flex items-center justify-between border-b border-neutral-800 px-3 py-2">
         <span className="text-xs font-medium text-neutral-400">Databases</span>
-        <button
-          type="button"
-          data-testid="new-database"
-          onClick={() => setAdding((v) => !v)}
-          disabled={busy}
-          className="rounded bg-neutral-800 px-2 py-1 text-[11px] font-medium text-neutral-200 hover:bg-neutral-700 disabled:opacity-40"
-        >
-          {adding ? "Cancel" : "New"}
-        </button>
+        <span className="flex items-center gap-1">
+          <button
+            type="button"
+            data-testid="create-sample-database"
+            onClick={onCreateSample}
+            disabled={busy}
+            title="Create the bundled sample database"
+            className="rounded bg-sky-900 px-2 py-1 text-[11px] font-medium text-sky-100 hover:bg-sky-800 disabled:opacity-40"
+          >
+            Sample
+          </button>
+          <button
+            type="button"
+            data-testid="new-database"
+            onClick={() => setAdding((v) => !v)}
+            disabled={busy}
+            className="rounded bg-neutral-800 px-2 py-1 text-[11px] font-medium text-neutral-200 hover:bg-neutral-700 disabled:opacity-40"
+          >
+            {adding ? "Cancel" : "New"}
+          </button>
+        </span>
       </div>
 
       {adding ? (

@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TabBlockedScreen } from "./TabBlockedScreen";
 import { DatabaseExplorer } from "../features/database-explorer/DatabaseExplorer";
+import { SchemaExplorer } from "../features/database-explorer/SchemaExplorer";
+import { TableBrowser } from "../features/database-explorer/TableBrowser";
+import { HistoryPanel } from "../features/query-history/HistoryPanel";
 import { PlanPanel } from "../features/query-analysis/PlanPanel";
 import { StatementBlock } from "../features/query-results/StatementBlock";
 import { SqlEditor, type SqlSelection } from "../features/sql-editor/SqlEditor";
 import { DatabaseService, type StartupResult } from "../services/database/databaseService";
+import { QueryHistoryService } from "../services/history/queryHistoryService";
 import {
   getStorageInfo,
   requestPersistentStorage,
@@ -12,7 +16,11 @@ import {
 } from "../services/storage/quota";
 import { idFromDbFileName } from "../services/storage/reconcile";
 import { StorageService } from "../services/storage/storageService";
-import { createIdbMetadataStore } from "../services/storage/metadataDb";
+import {
+  createIdbHistoryStore,
+  createIdbMetadataStore,
+  type HistoryEntry,
+} from "../services/storage/metadataDb";
 import { acquireTabLock, retryTabLock } from "../services/storage/tabGuard";
 import { DbOperationError, describeDbError } from "../shared/errors";
 import {
@@ -22,12 +30,15 @@ import {
   type LineColumn,
 } from "../shared/textPosition";
 import { WorkerManager } from "../services/worker/workerManager";
-import type {
-  DatabaseInfo,
-  ExecutionResponse,
-  QueryPlan,
-  StatementResult,
-  WorkerStatus,
+import {
+  TABLE_PAGE_SIZE,
+  type DatabaseInfo,
+  type DatabaseSchema,
+  type ExecutionResponse,
+  type QueryPlan,
+  type StatementResult,
+  type TablePage,
+  type WorkerStatus,
 } from "../shared/contracts";
 
 const DEFAULT_SQL = `-- ⌘/Ctrl+Enter runs the selection or the whole script; ⇧⌘/Ctrl+Enter explains
@@ -54,6 +65,21 @@ function getSharedDatabase(): DatabaseService {
     sharedDatabase = new DatabaseService({ backend: manager, storage });
   }
   return sharedDatabase;
+}
+
+let sharedHistory: QueryHistoryService | null = null;
+function getSharedHistory(): QueryHistoryService {
+  if (!sharedHistory) {
+    sharedHistory = new QueryHistoryService({ store: createIdbHistoryStore() });
+  }
+  return sharedHistory;
+}
+
+type RightTab = "analysis" | "history";
+
+interface BrowseState {
+  table: string;
+  offset: number;
 }
 
 interface ErrorPosition {
@@ -87,6 +113,7 @@ type TabLockState = "pending" | "owned" | "blocked";
 export default function App() {
   const managerRef = useRef<WorkerManager | null>(null);
   const databaseRef = useRef<DatabaseService | null>(null);
+  const historyRef = useRef<QueryHistoryService | null>(null);
   const [tabLock, setTabLock] = useState<TabLockState>("pending");
   const [lockUnsupported, setLockUnsupported] = useState(false);
   const [status, setStatus] = useState<WorkerStatus | null>(null);
@@ -114,11 +141,27 @@ export default function App() {
   const [runContext, setRunContext] = useState<{ doc: string; docStart: number } | null>(null);
   const [restartTxNotice, setRestartTxNotice] = useState(false);
   const [txBusy, setTxBusy] = useState(false);
+  const [schema, setSchema] = useState<DatabaseSchema | null>(null);
+  const [schemaBusy, setSchemaBusy] = useState(false);
+  const [schemaError, setSchemaError] = useState<string | null>(null);
+  const [schemaVersion, setSchemaVersion] = useState(0);
+  const [browse, setBrowse] = useState<BrowseState | null>(null);
+  const [tablePage, setTablePage] = useState<TablePage | null>(null);
+  const [tableBusy, setTableBusy] = useState(false);
+  const [tableError, setTableError] = useState<string | null>(null);
+  const [tableVersion, setTableVersion] = useState(0);
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [historyEnabled, setHistoryEnabled] = useState(true);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [rightTab, setRightTab] = useState<RightTab>("analysis");
 
   if (!managerRef.current) managerRef.current = getSharedManager();
   if (!databaseRef.current) databaseRef.current = getSharedDatabase();
+  if (!historyRef.current) historyRef.current = getSharedHistory();
   const manager = managerRef.current;
   const database = databaseRef.current;
+  const history = historyRef.current;
 
   // Tab guard first: never install the VFS or init the worker without the lock.
   useEffect(() => {
@@ -173,6 +216,82 @@ export default function App() {
       cancelled = true;
     };
   }, [tabLock]);
+
+  // Query history: load the opt-out preference and the newest entries once.
+  useEffect(() => {
+    if (tabLock !== "owned") return;
+    let cancelled = false;
+    Promise.all([history.isEnabled(), history.list()])
+      .then(([enabled, entries]) => {
+        if (cancelled) return;
+        setHistoryEnabled(enabled);
+        setHistoryEntries(entries);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setHistoryError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [history, tabLock]);
+
+  // Schema follows the active database, and refreshes after runs (DDL) or the
+  // explorer's explicit Refresh.
+  useEffect(() => {
+    if (tabLock !== "owned" || !activeId) {
+      setSchema(null);
+      return;
+    }
+    let cancelled = false;
+    setSchemaBusy(true);
+    setSchemaError(null);
+    database
+      .getSchema()
+      .then((next) => {
+        if (!cancelled) setSchema(next);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setSchemaError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setSchemaBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, database, schemaVersion, tabLock]);
+
+  // Switching databases closes the table browser so it never shows stale data.
+  useEffect(() => {
+    setBrowse(null);
+  }, [activeId]);
+
+  // One page at a time; a new table/offset cancels the previous result.
+  useEffect(() => {
+    if (!browse) {
+      setTablePage(null);
+      setTableError(null);
+      return;
+    }
+    let cancelled = false;
+    setTableBusy(true);
+    setTableError(null);
+    database
+      .browseTable(browse.table, { limit: TABLE_PAGE_SIZE, offset: browse.offset })
+      .then((page) => {
+        if (!cancelled) setTablePage(page);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setTableError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setTableBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [browse, database, tableVersion]);
 
   const refreshDatabases = useCallback(async () => {
     const [list, freshStatus] = await Promise.all([database.listDatabases(), manager.status()]);
@@ -233,6 +352,30 @@ export default function App() {
     setErrorMark(null); // the mark tracks the last run; editing invalidates it.
   }, []);
 
+  const loadSql = useCallback(
+    (next: string) => {
+      handleSqlChange(next);
+      setSelection(null);
+    },
+    [handleSqlChange],
+  );
+
+  const recordHistory = useCallback(
+    async (script: string, ok: boolean, engineMs: number) => {
+      try {
+        const stored = await history.record(script, { ok, engineMs });
+        if (stored) {
+          setHistoryEntries(await history.list());
+          setHistoryError(null);
+        }
+      } catch (err) {
+        // History must never break execution.
+        setHistoryError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [history],
+  );
+
   const run = useCallback(async () => {
     const sel = selection;
     const useSelection = sel !== null && sel.text.trim() !== "";
@@ -251,6 +394,9 @@ export default function App() {
           ? computeErrorMark(script, docStart, err.span, err.error.offset)
           : null,
       );
+      setSchemaVersion((version) => version + 1);
+      setTableVersion((version) => version + 1);
+      void recordHistory(script, !err, res.totalEngineMs);
     } catch (err) {
       setResponse(null);
       setRunContext(null);
@@ -259,7 +405,7 @@ export default function App() {
     } finally {
       setRunning(false);
     }
-  }, [database, sql, selection]);
+  }, [database, recordHistory, sql, selection]);
 
   const explain = useCallback(async () => {
     const sel = selection;
@@ -345,6 +491,52 @@ export default function App() {
     setStorageInfo(await getStorageInfo());
   }, []);
 
+  const toggleHistory = useCallback(
+    async (enabled: boolean) => {
+      setHistoryBusy(true);
+      setHistoryError(null);
+      try {
+        await history.setEnabled(enabled);
+        setHistoryEnabled(enabled);
+        setHistoryEntries(await history.list());
+      } catch (err) {
+        setHistoryError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setHistoryBusy(false);
+      }
+    },
+    [history],
+  );
+
+  const clearHistory = useCallback(async () => {
+    setHistoryBusy(true);
+    setHistoryError(null);
+    try {
+      await history.clear();
+      setHistoryEntries([]);
+    } catch (err) {
+      setHistoryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setHistoryBusy(false);
+    }
+  }, [history]);
+
+  const refreshSchema = useCallback(() => {
+    setSchemaVersion((version) => version + 1);
+  }, []);
+
+  const openTable = useCallback((table: string) => {
+    setBrowse({ table, offset: 0 });
+  }, []);
+
+  const closeTable = useCallback(() => {
+    setBrowse(null);
+  }, []);
+
+  const goToTablePage = useCallback((offset: number) => {
+    setBrowse((current) => (current ? { ...current, offset: Math.max(0, offset) } : current));
+  }, []);
+
   if (tabLock === "blocked") {
     return <TabBlockedScreen onRetry={() => void retryLock()} />;
   }
@@ -411,18 +603,30 @@ export default function App() {
 
       <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)_320px] overflow-hidden">
         {/* Explorer sidebar (plan §5.1) */}
-        <aside className="min-h-0 border-r border-neutral-800">
-          <DatabaseExplorer
-            databases={databases}
-            activeId={activeId}
-            busy={dbBusy || tabLock !== "owned"}
-            error={dbOpError}
-            storageInfo={storageInfo}
-            onOpen={(id) => void runDbOp(() => database.openDatabase(id))}
-            onCreate={(name) => void runDbOp(() => database.createDatabase(name))}
-            onRename={(id, name) => void runDbOp(() => database.renameDatabase(id, name))}
-            onDelete={(id) => void runDbOp(() => database.deleteDatabase(id))}
-            onRequestPersistence={() => void requestPersist()}
+        <aside className="flex min-h-0 flex-col border-r border-neutral-800">
+          <div className="flex min-h-0 basis-[45%] shrink-0 flex-col overflow-hidden">
+            <DatabaseExplorer
+              databases={databases}
+              activeId={activeId}
+              busy={dbBusy || tabLock !== "owned"}
+              error={dbOpError}
+              storageInfo={storageInfo}
+              onOpen={(id) => void runDbOp(() => database.openDatabase(id))}
+              onCreate={(name) => void runDbOp(() => database.createDatabase(name))}
+              onCreateSample={() => void runDbOp(() => database.createSampleDatabase())}
+              onRename={(id, name) => void runDbOp(() => database.renameDatabase(id, name))}
+              onDelete={(id) => void runDbOp(() => database.deleteDatabase(id))}
+              onRequestPersistence={() => void requestPersist()}
+            />
+          </div>
+          <SchemaExplorer
+            schema={schema}
+            activeDatabase={activeDatabase}
+            busy={schemaBusy}
+            error={schemaError}
+            onRefresh={refreshSchema}
+            onBrowse={openTable}
+            onLoadQuery={loadSql}
           />
         </aside>
 
@@ -504,107 +708,191 @@ export default function App() {
           </section>
 
           <section className="flex min-h-0 flex-col overflow-hidden">
-            <div className="border-b border-neutral-800 px-3 py-2 text-xs text-neutral-400">
-              Results
-              {restartMs !== null && (
-                <span className="ml-2 text-emerald-400" data-testid="restart-ms">
-                  {restartMs.toFixed(0)} ms
-                </span>
-              )}
-              {restartTxNotice && (
-                <span className="ml-2 text-orange-300" data-testid="restart-transaction-notice">
-                  SQLite rolled back your open transaction (worker restarted)
-                </span>
-              )}
-              {response && (
-                <span className="ml-2 text-neutral-500">
-                  {response.statements.length} statement
-                  {response.statements.length === 1 ? "" : "s"} ·{" "}
-                  {response.totalEngineMs.toFixed(2)} ms total
-                </span>
-              )}
-              {response?.inTransaction && (
-                <span
-                  className="ml-2 inline-flex items-center gap-1.5"
-                  data-testid="open-transaction"
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-800 px-3 py-2 text-xs text-neutral-400">
+              <div className="flex items-center gap-1" role="tablist" aria-label="Results view">
+                <button
+                  type="button"
+                  role="tab"
+                  data-testid="results-tab"
+                  aria-selected={browse === null}
+                  onClick={closeTable}
+                  className={`rounded px-2 py-1 font-medium ${
+                    browse === null
+                      ? "bg-neutral-800 text-neutral-100"
+                      : "text-neutral-400 hover:bg-neutral-900"
+                  }`}
                 >
-                  <span className="text-amber-400">open transaction</span>
+                  Results
+                </button>
+                {browse ? (
                   <button
                     type="button"
-                    data-testid="commit-button"
-                    onClick={() => void runTransactionCommand("COMMIT")}
-                    disabled={running || txBusy}
-                    className="rounded bg-amber-800 px-1.5 py-0.5 font-medium text-amber-100 hover:bg-amber-700 disabled:opacity-40"
+                    role="tab"
+                    data-testid="table-tab"
+                    aria-selected="true"
+                    className="rounded bg-neutral-800 px-2 py-1 font-medium text-neutral-100"
                   >
-                    Commit
+                    Table: {browse.table}
                   </button>
-                  <button
-                    type="button"
-                    data-testid="rollback-button"
-                    onClick={() => void runTransactionCommand("ROLLBACK")}
-                    disabled={running || txBusy}
-                    className="rounded bg-neutral-700 px-1.5 py-0.5 font-medium text-neutral-100 hover:bg-neutral-600 disabled:opacity-40"
+                ) : null}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {restartMs !== null && (
+                  <span className="text-emerald-400" data-testid="restart-ms">
+                    {restartMs.toFixed(0)} ms
+                  </span>
+                )}
+                {restartTxNotice && (
+                  <span className="text-orange-300" data-testid="restart-transaction-notice">
+                    SQLite rolled back your open transaction (worker restarted)
+                  </span>
+                )}
+                {response && (
+                  <span className="text-neutral-500">
+                    {response.statements.length} statement
+                    {response.statements.length === 1 ? "" : "s"} ·{" "}
+                    {response.totalEngineMs.toFixed(2)} ms total
+                  </span>
+                )}
+                {response?.inTransaction && (
+                  <span className="inline-flex items-center gap-1.5" data-testid="open-transaction">
+                    <span className="text-amber-400">open transaction</span>
+                    <button
+                      type="button"
+                      data-testid="commit-button"
+                      onClick={() => void runTransactionCommand("COMMIT")}
+                      disabled={running || txBusy}
+                      className="rounded bg-amber-800 px-1.5 py-0.5 font-medium text-amber-100 hover:bg-amber-700 disabled:opacity-40"
+                    >
+                      Commit
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="rollback-button"
+                      onClick={() => void runTransactionCommand("ROLLBACK")}
+                      disabled={running || txBusy}
+                      className="rounded bg-neutral-700 px-1.5 py-0.5 font-medium text-neutral-100 hover:bg-neutral-600 disabled:opacity-40"
+                    >
+                      Rollback
+                    </button>
+                  </span>
+                )}
+                {response?.rolledBackBySqlite && (
+                  <span className="text-orange-400" data-testid="sqlite-rolled-back">
+                    SQLite rolled back your transaction
+                  </span>
+                )}
+                {exportInfo && (
+                  <span className="text-neutral-500" data-testid="export-result">
+                    {exportInfo}
+                  </span>
+                )}
+              </div>
+            </div>
+            {browse ? (
+              <TableBrowser
+                table={browse.table}
+                page={tablePage}
+                loading={tableBusy}
+                error={tableError}
+                onPage={goToTablePage}
+                onClose={closeTable}
+              />
+            ) : (
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" data-testid="results">
+                {runError && (
+                  <div
+                    className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
+                    data-testid="run-error"
                   >
-                    Rollback
-                  </button>
-                </span>
-              )}
-              {response?.rolledBackBySqlite && (
-                <span className="ml-2 text-orange-400" data-testid="sqlite-rolled-back">
-                  SQLite rolled back your transaction
-                </span>
-              )}
-              {exportInfo && (
-                <span className="ml-2 text-neutral-500" data-testid="export-result">
-                  {exportInfo}
-                </span>
-              )}
-            </div>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" data-testid="results">
-              {runError && (
-                <div
-                  className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
-                  data-testid="run-error"
-                >
-                  {runError}
-                </div>
-              )}
-              {!runError && !response && (
-                <p className="text-sm text-neutral-500">
-                  Run SQL to see per-statement results, timing, and transaction state. Explain
-                  parses the query plan in the worker (Rust wasm or TS fallback). Databases persist
-                  in OPFS across reloads when available.
-                </p>
-              )}
-              {response && (
-                <StatementBlockList
-                  statements={response.statements}
-                  errorPosition={errorPosition}
-                />
-              )}
-            </div>
+                    {runError}
+                  </div>
+                )}
+                {!runError && !response && (
+                  <p className="text-sm text-neutral-500">
+                    Run SQL to see per-statement results, timing, and transaction state. Explain
+                    parses the query plan in the worker (Rust wasm or TS fallback). Databases
+                    persist in OPFS across reloads when available.
+                  </p>
+                )}
+                {response && (
+                  <StatementBlockList
+                    statements={response.statements}
+                    errorPosition={errorPosition}
+                  />
+                )}
+              </div>
+            )}
           </section>
         </div>
 
-        {/* Analysis panel */}
-        <aside className="min-h-0 space-y-3 overflow-y-auto border-l border-neutral-800 p-3">
-          <div className="text-xs font-medium text-neutral-400">Analysis</div>
-          {planError && (
-            <div
-              className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
-              data-testid="plan-error"
+        {/* Analysis / history panel */}
+        <aside className="flex min-h-0 flex-col gap-3 border-l border-neutral-800 p-3">
+          <div className="flex items-center gap-1" role="tablist" aria-label="Side panel">
+            <button
+              type="button"
+              role="tab"
+              data-testid="analysis-tab"
+              aria-selected={rightTab === "analysis"}
+              onClick={() => setRightTab("analysis")}
+              className={`rounded px-2 py-1 text-xs font-medium ${
+                rightTab === "analysis"
+                  ? "bg-neutral-800 text-neutral-100"
+                  : "text-neutral-400 hover:bg-neutral-900"
+              }`}
             >
-              explain failed: {planError}
-            </div>
-          )}
-          {plan ? (
-            <PlanPanel plan={plan} />
-          ) : !planError ? (
-            <p className="text-sm text-neutral-500">
-              Run Explain to see how SQLite processes the query: scans, searches, and index usage,
-              with the raw plan output preserved.
-            </p>
-          ) : null}
+              Analysis
+            </button>
+            <button
+              type="button"
+              role="tab"
+              data-testid="history-tab"
+              aria-selected={rightTab === "history"}
+              onClick={() => setRightTab("history")}
+              className={`rounded px-2 py-1 text-xs font-medium ${
+                rightTab === "history"
+                  ? "bg-neutral-800 text-neutral-100"
+                  : "text-neutral-400 hover:bg-neutral-900"
+              }`}
+            >
+              History
+              {historyEntries.length > 0 ? (
+                <span className="ml-1 text-[10px] text-neutral-500">{historyEntries.length}</span>
+              ) : null}
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {rightTab === "analysis" ? (
+              <div className="space-y-3">
+                {planError && (
+                  <div
+                    className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
+                    data-testid="plan-error"
+                  >
+                    explain failed: {planError}
+                  </div>
+                )}
+                {plan ? (
+                  <PlanPanel plan={plan} />
+                ) : !planError ? (
+                  <p className="text-sm text-neutral-500">
+                    Run Explain to see how SQLite processes the query: scans, searches, and index
+                    usage, with the raw plan output preserved.
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <HistoryPanel
+                entries={historyEntries}
+                enabled={historyEnabled}
+                busy={historyBusy}
+                error={historyError}
+                onLoad={loadSql}
+                onToggleEnabled={(enabled) => void toggleHistory(enabled)}
+                onClear={() => void clearHistory()}
+              />
+            )}
+          </div>
         </aside>
       </div>
 

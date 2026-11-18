@@ -98,6 +98,47 @@ class FakeWorker {
         bytes: new Uint8Array([83, 81, 76, 105, 116, 101]),
         name: "playground.sqlite3",
       };
+    } else if (req.type === "schema") {
+      res = {
+        type: "schema-result",
+        requestId: req.requestId,
+        schema: {
+          tables: [
+            {
+              name: "t",
+              type: "table",
+              columns: [
+                {
+                  name: "id",
+                  declaredType: "INTEGER",
+                  notNull: false,
+                  defaultValue: null,
+                  primaryKey: true,
+                  primaryKeyOrder: 1,
+                },
+              ],
+              foreignKeys: [],
+              indexes: [],
+              checkConstraints: [],
+              sql: "CREATE TABLE t(id INTEGER PRIMARY KEY)",
+            },
+          ],
+          views: [],
+        },
+      };
+    } else if (req.type === "browse-table") {
+      res = {
+        type: "table-page",
+        requestId: req.requestId,
+        page: {
+          table: req.table,
+          columns: [{ name: "id" }],
+          rows: [[1]],
+          totalRows: 1,
+          limit: req.limit,
+          offset: req.offset,
+        },
+      };
     } else {
       res = { type: "status-result", requestId: req.requestId, status: { ...FAKE_STATUS } };
     }
@@ -253,6 +294,19 @@ describe("WorkerManager", () => {
     const exported = await manager.exportDb();
     expect(exported.name).toBe("playground.sqlite3");
     expect(exported.bytes.byteLength).toBeGreaterThan(0);
+    manager.terminate();
+  });
+
+  it("requests the schema and paged table data", async () => {
+    const { manager, worker } = makeManager();
+    const schema = await manager.getSchema();
+    expect(schema.tables[0]?.name).toBe("t");
+
+    const page = await manager.browseTable("t", { limit: 25, offset: 50 });
+    expect(page).toMatchObject({ table: "t", limit: 25, offset: 50, totalRows: 1 });
+    expect(worker.posted.map((message) => message.type)).toEqual(
+      expect.arrayContaining(["schema", "browse-table"]),
+    );
     manager.terminate();
   });
 

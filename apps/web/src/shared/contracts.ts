@@ -72,6 +72,67 @@ export interface DatabaseInfo {
   lastOpenedAt: number;
   sizeBytes: number;
   status: DatabaseStatus;
+  /** Set for databases created by `createSampleDatabase` (drives demo queries). */
+  sample?: boolean;
+}
+
+/** Schema explorer contracts (plan §7 Week 5). */
+
+export interface ColumnSchema {
+  name: string;
+  declaredType: string;
+  notNull: boolean;
+  defaultValue: string | null;
+  primaryKey: boolean;
+  /** 1-based position within a composite primary key; 0 when not part of it. */
+  primaryKeyOrder: number;
+}
+
+export interface ForeignKeySchema {
+  id: number;
+  from: string;
+  table: string;
+  to: string | null;
+  onUpdate: string;
+  onDelete: string;
+}
+
+export type IndexOrigin = "c" | "u" | "pk" | "unknown";
+
+export interface IndexSchema {
+  name: string;
+  unique: boolean;
+  /** c = CREATE INDEX, u = UNIQUE constraint, pk = PRIMARY KEY. */
+  origin: IndexOrigin;
+  partial: boolean;
+  columns: string[];
+}
+
+export interface TableSchema {
+  name: string;
+  type: "table" | "view" | "virtual";
+  columns: ColumnSchema[];
+  foreignKeys: ForeignKeySchema[];
+  indexes: IndexSchema[];
+  /** CHECK expressions parsed from the CREATE statement (best effort). */
+  checkConstraints: string[];
+  /** Original CREATE statement from sqlite_master, when available. */
+  sql: string | null;
+}
+
+export interface DatabaseSchema {
+  tables: TableSchema[];
+  views: TableSchema[];
+}
+
+/** One page of table/view data for the explorer's table browser. */
+export interface TablePage {
+  table: string;
+  columns: ColumnInfo[];
+  rows: SqlValue[][];
+  totalRows: number;
+  limit: number;
+  offset: number;
 }
 
 /** Plan toolkit contracts (plan §4) — Rust behind this, TS fallback. */
@@ -125,3 +186,7 @@ export interface WorkerStatus {
 }
 
 export const DEFAULT_MAX_ROWS = 1000;
+
+/** Table browser page size (plan §7 Week 5: LIMIT/OFFSET paging for MVP). */
+export const TABLE_PAGE_SIZE = 50;
+export const MAX_TABLE_PAGE_SIZE = 500;

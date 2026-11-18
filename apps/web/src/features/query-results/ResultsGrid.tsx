@@ -18,6 +18,8 @@ export function formatValue(v: SqlValue): string {
 export interface ResultsGridProps {
   columns: ColumnInfo[];
   rows: SqlValue[][];
+  /** Accessible grid name; the results panel keeps the default. */
+  label?: string;
 }
 
 interface CellPos {
@@ -35,7 +37,7 @@ interface CellPos {
  * derived from row counts so the grid behaves identically without layout
  * (jsdom).
  */
-export function ResultsGrid({ columns, rows }: ResultsGridProps) {
+export function ResultsGrid({ columns, rows, label = "Query results" }: ResultsGridProps) {
   const rowCount = rows.length;
   const colCount = columns.length;
   const bodyViewport = Math.min(rowCount, MAX_VISIBLE_ROWS) * ROW_HEIGHT;
@@ -165,7 +167,7 @@ export function ResultsGrid({ columns, rows }: ResultsGridProps) {
       >
         <table
           role="grid"
-          aria-label="Query results"
+          aria-label={label}
           aria-rowcount={rowCount + 1}
           aria-colcount={colCount}
           aria-describedby={hintId}

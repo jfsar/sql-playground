@@ -102,7 +102,7 @@ export class StorageService {
    * Create a database entry and its pool file, then open it — a newly created
    * database becomes the active connection (the natural "New database" flow).
    */
-  async createDatabase(name: string): Promise<DatabaseInfo> {
+  async createDatabase(name: string, opts: { sample?: boolean } = {}): Promise<DatabaseInfo> {
     const trimmed = name.trim();
     const info: DatabaseInfo = {
       id: crypto.randomUUID(),
@@ -111,6 +111,7 @@ export class StorageService {
       lastOpenedAt: this.now(),
       sizeBytes: 0,
       status: "ok",
+      ...(opts.sample ? { sample: true } : {}),
     };
     await this.store.putDatabase(info);
     try {
