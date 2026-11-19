@@ -42,6 +42,22 @@ describe("StatementBlock", () => {
     expect(screen.queryByTestId("truncated-notice-0")).toBeNull();
   });
 
+  it("fills the card and grid when fill is set", () => {
+    const result: StatementResult = {
+      kind: "rows",
+      sql: "SELECT 1;",
+      columns: [{ name: "v" }],
+      rows: [[1]],
+      truncated: false,
+      engineMs: 1,
+    };
+    render(<StatementBlock result={result} index={0} fill />);
+    const card = screen.getByTestId("stmt-rows-0");
+    expect(card.className).toContain("flex-1");
+    expect(card.className).toContain("min-h-0");
+    expect(screen.getByTestId("results-grid").getAttribute("data-fill")).toBe("true");
+  });
+
   it("shows a truncation notice when the row cap was hit", () => {
     const result: StatementResult = {
       kind: "rows",

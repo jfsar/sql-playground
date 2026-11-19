@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import type { ColumnInfo, SqlValue } from "../../shared/contracts";
 import { computeVirtualWindow } from "./virtualRows";
 
@@ -7,6 +7,30 @@ export const ROW_HEIGHT = 30;
 /** Data rows visible before the grid scrolls (plan SC-05: 1,000-row renders). */
 export const MAX_VISIBLE_ROWS = 10;
 const OVERSCAN = 4;
+
+/**
+ * Track an element's rendered height. jsdom has no layout engine and may lack
+ * `ResizeObserver`, so callers fall back to count-derived heights when this
+ * returns 0.
+ */
+function useMeasuredHeight(ref: RefObject<HTMLElement | null>): number {
+  const [height, setHeight] = useState(0);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setHeight(el.clientHeight);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setHeight(entry.contentRect.height);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+
+  return height;
+}
 
 export function formatValue(v: SqlValue): string {
   if (v === null) return "NULL";
@@ -20,6 +44,12 @@ export interface ResultsGridProps {
   rows: SqlValue[][];
   /** Accessible grid name; the results panel keeps the default. */
   label?: string;
+  /**
+   * Fill the available height of a flex parent instead of a fixed 10-row
+   * window. Used for a single-statement result so the results panel itself
+   * does not need to scroll.
+   */
+  fill?: boolean;
 }
 
 interface CellPos {
@@ -33,18 +63,28 @@ interface CellPos {
  * full result, `aria-rowindex`/`aria-colindex` on the rendered window, a
  * roving tabindex (one tab stop into the grid), and arrow-key navigation.
  *
- * Rows are windowed by fixed pixel height (see virtualRows.ts); heights are
- * derived from row counts so the grid behaves identically without layout
- * (jsdom).
+ * Rows are windowed by fixed pixel height (see virtualRows.ts). Without layout
+ * (jsdom) the window falls back to heights derived from row counts; `fill`
+ * grids use a `ResizeObserver`-measured viewport instead.
  */
-export function ResultsGrid({ columns, rows, label = "Query results" }: ResultsGridProps) {
+export function ResultsGrid({
+  columns,
+  rows,
+  label = "Query results",
+  fill = false,
+}: ResultsGridProps) {
   const rowCount = rows.length;
   const colCount = columns.length;
-  const bodyViewport = Math.min(rowCount, MAX_VISIBLE_ROWS) * ROW_HEIGHT;
-  const gridHeight =
-    rowCount === 0 ? ROW_HEIGHT : ROW_HEIGHT + Math.min(rowCount, MAX_VISIBLE_ROWS) * ROW_HEIGHT;
-
   const scrollRef = useRef<HTMLDivElement>(null);
+  const measuredHeight = useMeasuredHeight(scrollRef);
+  const fixedViewport = Math.min(rowCount, MAX_VISIBLE_ROWS) * ROW_HEIGHT;
+  // The scroll container includes the sticky 30px header, so the body viewport
+  // is the measured height minus one row. Before measurement (or in jsdom)
+  // fall back to the count-derived window.
+  const bodyViewport =
+    fill && measuredHeight > 0 ? Math.max(0, measuredHeight - ROW_HEIGHT) : fixedViewport;
+  const gridHeight = rowCount === 0 ? ROW_HEIGHT : ROW_HEIGHT + fixedViewport;
+
   const cellRefs = useRef<(HTMLElement | null)[][]>([]);
   const pendingFocus = useRef<CellPos | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -160,8 +200,11 @@ export function ResultsGrid({ columns, rows, label = "Query results" }: ResultsG
       <div
         ref={scrollRef}
         data-testid="results-grid"
-        className="results-grid-scroll overflow-auto"
-        style={{ height: gridHeight }}
+        data-fill={fill ? "true" : undefined}
+        className={`results-grid-scroll overflow-auto overscroll-contain ${
+          fill ? "min-h-0 flex-1" : ""
+        }`}
+        style={fill ? undefined : { height: gridHeight }}
         onScroll={(e) => setScrollTop(Math.round(e.currentTarget.scrollTop))}
         onKeyDown={handleKeyDown}
       >

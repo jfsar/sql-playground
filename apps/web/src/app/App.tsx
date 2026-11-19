@@ -100,9 +100,11 @@ interface ErrorPosition {
 function StatementBlockList({
   statements,
   errorPosition,
+  fill,
 }: {
   statements: StatementResult[];
   errorPosition: ErrorPosition | null;
+  fill?: boolean;
 }) {
   return (
     <>
@@ -112,6 +114,7 @@ function StatementBlockList({
           result={r}
           index={i}
           position={errorPosition && errorPosition.index === i ? errorPosition.position : undefined}
+          fill={fill}
         />
       ))}
     </>
@@ -981,7 +984,10 @@ export default function App() {
                 onClose={closeTable}
               />
             ) : (
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" data-testid="results">
+              <div
+                className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3"
+                data-testid="results"
+              >
                 {runError && (
                   <div
                     className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
@@ -1001,6 +1007,7 @@ export default function App() {
                   <StatementBlockList
                     statements={response.statements}
                     errorPosition={errorPosition}
+                    fill={!runError && response.statements.length === 1}
                   />
                 )}
               </div>

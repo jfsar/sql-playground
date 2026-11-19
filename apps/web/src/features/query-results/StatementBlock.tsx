@@ -31,10 +31,15 @@ export interface StatementBlockProps {
   index: number;
   /** Document line/column of the error, when SQLite reported an offset. */
   position?: LineColumn | null;
+  /**
+   * Fill the available height of the results panel. Set for a single result so
+   * only the grid scrolls; multi-statement lists keep the fixed 10-row window.
+   */
+  fill?: boolean;
 }
 
 /** One per-statement result: rows grid, change summary, or error (plan §5.2). */
-export function StatementBlock({ result, index, position }: StatementBlockProps) {
+export function StatementBlock({ result, index, position, fill = false }: StatementBlockProps) {
   if (result.kind === "error") {
     const relOffset =
       result.error.offset !== undefined && result.error.offset >= 0
@@ -83,7 +88,10 @@ export function StatementBlock({ result, index, position }: StatementBlockProps)
   return (
     <div
       data-testid={`stmt-rows-${index}`}
-      className="rounded border border-neutral-700 bg-neutral-900 p-3 text-sm"
+      className={[
+        "rounded border border-neutral-700 bg-neutral-900 p-3 text-sm",
+        fill ? "flex min-h-0 flex-1 flex-col" : "",
+      ].join(" ")}
     >
       <div className="font-semibold text-sky-300">
         Statement {index + 1} · {result.rows.length} row{result.rows.length === 1 ? "" : "s"}
@@ -102,10 +110,17 @@ export function StatementBlock({ result, index, position }: StatementBlockProps)
           Refine the query to see the full result.
         </div>
       ) : null}
-      <div className="mt-2">
-        <ResultsGrid columns={result.columns} rows={result.rows} />
+      <div className={fill ? "mt-2 flex min-h-0 flex-1 flex-col" : "mt-2"}>
+        <ResultsGrid columns={result.columns} rows={result.rows} fill={fill} />
       </div>
-      <pre className="mt-2 overflow-x-auto text-neutral-500">{result.sql}</pre>
+      <pre
+        className={
+          fill ? "mt-2 truncate text-neutral-500" : "mt-2 overflow-x-auto text-neutral-500"
+        }
+        title={fill ? result.sql : undefined}
+      >
+        {result.sql}
+      </pre>
     </div>
   );
 }

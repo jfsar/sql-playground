@@ -52,6 +52,11 @@ mark. Helpers live in `shared/textPosition.ts` (pure, unit-tested).
   of `<tr>`s between spacer rows, so 1,000 rows never enter the DOM.
   Heights derive from row counts (identical behavior without layout), which
   keeps the grid unit-testable in jsdom.
+- A single-statement result fills the available results height instead of the
+  fixed 10-row window (`fill`): a `ResizeObserver`-measured viewport drives the
+  same window math (count-derived fallback when unmeasured/jsdom), so only the
+  grid scrolls. Multi-statement lists keep the fixed window and the outer
+  results panel scrolls them.
 - `role="grid"` with `aria-rowcount`/`aria-colcount` over the **full** result,
   `aria-rowindex`/`aria-colindex` on the rendered window, a roving tabindex
   (exactly one tab stop), and arrow/Page/Home/End/Ctrl+Home/Ctrl+End

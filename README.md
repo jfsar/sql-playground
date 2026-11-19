@@ -182,10 +182,11 @@ the Safari matrix run still owed before release.
 - [x] SQL error display: statement-relative `sqlite3_error_offset` mapped to
       document line/column, caret under the token, `.cm-error-mark` underline
       cleared on edit (plan §5.2 rule 6)
-- [x] Results grid: virtualized 10-row window over the 1,000-row cap with the
-      ARIA grid pattern — `aria-rowcount`/`aria-colcount`, roving tabindex,
-      arrow/Page/Home/End navigation — plus the `role="status"` truncation
-      notice (NFR-11, audited Week 9)
+- [x] Results grid: virtualized window over the 1,000-row cap — fills the pane
+      for a single statement (one scrollbar) and keeps a 10-row window in
+      multi-statement lists — with the ARIA grid pattern (`aria-rowcount`/
+      `aria-colcount`, roving tabindex, arrow/Page/Home/End navigation) plus the
+      `role="status"` truncation notice (NFR-11, audited Week 9)
 - [x] ADR-004 restart with an open transaction surfaces the rollback notice
 - [x] ADR-007 written; 152 unit tests + 19 e2e tests green
 - [ ] Safari 17+ run (pending macOS; ADR-001/002/005 note it)

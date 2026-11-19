@@ -64,6 +64,36 @@ describe("ResultsGrid", () => {
     expect(screen.getAllByRole("gridcell").length).toBeLessThan(30);
   });
 
+  it("keeps the fixed 10-row window without fill", () => {
+    render(<ResultsGrid columns={columns} rows={makeRows(1000)} />);
+    const grid = screen.getByTestId("results-grid");
+    expect(grid.getAttribute("data-fill")).toBeNull();
+    expect(grid.style.height).toBe("330px");
+  });
+
+  it("fills the measured height when fill is set", () => {
+    // jsdom has no layout; stub the scroll container's height so the window
+    // reflects the fill path instead of the count-derived fallback.
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get: () => 330,
+    });
+    try {
+      render(<ResultsGrid columns={columns} rows={makeRows(1000)} fill />);
+      const grid = screen.getByTestId("results-grid");
+      expect(grid.getAttribute("data-fill")).toBe("true");
+      // No inline height: the flex parent drives the size.
+      expect(grid.style.height).toBe("");
+      // 330px − 30px header = a 10-row body plus overscan.
+      expect(screen.getAllByRole("gridcell").length).toBeGreaterThanOrEqual(10);
+      expect(screen.getAllByRole("gridcell").length).toBeLessThan(30);
+    } finally {
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
+      else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
+    }
+  });
+
   it("renders only the header when there are no rows", () => {
     render(<ResultsGrid columns={columns} rows={[]} />);
     expect(screen.getByRole("grid").getAttribute("aria-rowcount")).toBe("1");

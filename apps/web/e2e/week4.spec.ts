@@ -254,3 +254,42 @@ test("Cancel button aborts a running query and returns to idle (Week 4)", async 
   await expect(page.getByTestId("run-button")).toBeEnabled();
   await expect(page.getByTestId("cancel-button")).toHaveCount(0);
 });
+
+test("a single result fills the panel with one scrollbar (Week 4)", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("ready")).toBeVisible({ timeout: 30_000 });
+
+  await page.getByTestId("sql-input").fill(`WITH RECURSIVE c(x) AS (
+  SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 25
+) SELECT x FROM c;`);
+  await page.getByTestId("sql-input").click();
+  await page.getByTestId("run-button").click();
+  await expect(page.getByTestId("stmt-rows-0")).toBeVisible({ timeout: 15_000 });
+
+  // The grid fills the pane and scrolls; the results panel itself does not,
+  // so only one vertical scrollbar is visible.
+  const grid = page.getByTestId("results-grid");
+  const results = page.getByTestId("results");
+  await expect.poll(() => grid.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  await expect
+    .poll(() => results.evaluate((el) => el.scrollHeight <= el.clientHeight + 1))
+    .toBe(true);
+});
+
+test("multiple statements still scroll the results panel (Week 4)", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("ready")).toBeVisible({ timeout: 30_000 });
+
+  await page.getByTestId("sql-input").fill(`WITH RECURSIVE c(x) AS (
+  SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 25
+) SELECT x FROM c;
+WITH RECURSIVE d(x) AS (
+  SELECT 1 UNION ALL SELECT x + 1 FROM d WHERE x < 25
+) SELECT x FROM d;`);
+  await page.getByTestId("sql-input").click();
+  await page.getByTestId("run-button").click();
+  await expect(page.getByTestId("stmt-rows-1")).toBeVisible({ timeout: 15_000 });
+
+  const results = page.getByTestId("results");
+  await expect.poll(() => results.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+});
