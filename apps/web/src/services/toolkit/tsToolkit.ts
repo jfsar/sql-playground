@@ -46,12 +46,30 @@ function indexName(s: string): string | undefined {
   return name.length > 0 ? name : undefined;
 }
 
+/**
+ * Name of an automatic index, when SQLite reports one. Older builds use
+ * `(i0 (a=?))`; 3.54 reports `(a=?)` with no name, so the name is optional.
+ */
+function automaticIndexName(s: string): string | undefined {
+  const inner = s.trimStart();
+  if (!inner.startsWith("(")) return undefined;
+  const [name, rest] = firstToken(inner.slice(1));
+  return name.length > 0 && rest.trimStart().startsWith("(") ? name : undefined;
+}
+
 /** Parse the `USING …` suffix of a SCAN/SEARCH detail (may be empty). */
 function parseUsing(s: string, tags: string[]): string | undefined {
   const afterUsing = stripKeyword(s.trimStart(), "USING");
   if (afterUsing === null) return undefined;
   const rest = afterUsing.trimStart();
 
+  // 3.54 can report "AUTOMATIC COVERING INDEX"; match the longer form first.
+  const automaticCovering = stripKeyword(rest, "AUTOMATIC COVERING INDEX");
+  if (automaticCovering !== null) {
+    pushTag(tags, "AUTOMATIC INDEX");
+    pushTag(tags, "COVERING INDEX");
+    return automaticIndexName(automaticCovering);
+  }
   const covering = stripKeyword(rest, "COVERING INDEX");
   if (covering !== null) {
     pushTag(tags, "COVERING INDEX");
@@ -62,9 +80,7 @@ function parseUsing(s: string, tags: string[]): string | undefined {
   const automatic = stripKeyword(rest, "AUTOMATIC INDEX");
   if (automatic !== null) {
     pushTag(tags, "AUTOMATIC INDEX");
-    const inner = automatic.trimStart();
-    if (!inner.startsWith("(")) return undefined;
-    return indexName(inner.slice(1));
+    return automaticIndexName(automatic);
   }
   if (rest.startsWith("INTEGER PRIMARY KEY")) pushTag(tags, "INTEGER PRIMARY KEY");
   return undefined;
@@ -81,6 +97,7 @@ function collectCommonTags(detail: string, tags: string[]): void {
   if (detail.includes("TEMP B-TREE")) pushTag(tags, "TEMP B-TREE");
   if (detail.includes("CO-ROUTINE")) pushTag(tags, "CO-ROUTINE");
   if (detail.includes("MATERIALIZE")) pushTag(tags, "MATERIALIZE");
+  if (detail.includes("BLOOM FILTER")) pushTag(tags, "BLOOM FILTER");
 }
 
 export function parseNode(row: RawPlanRow): QueryPlanNode {

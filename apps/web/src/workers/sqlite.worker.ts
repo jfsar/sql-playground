@@ -281,6 +281,19 @@ function handleExplain(req: Extract<WorkerRequest, { type: "explain" }>): void {
   }
 }
 
+function handleDiffPlans(req: Extract<WorkerRequest, { type: "diff-plans" }>): void {
+  if (!toolkit) {
+    fail(req.requestId, new Error("Plan analysis is unavailable; the worker is not ready."));
+    return;
+  }
+  try {
+    const diff = toolkit.diffPlans(req.before, req.after);
+    post({ type: "diffed", requestId: req.requestId, diff });
+  } catch (err) {
+    fail(req.requestId, err, "SQL_ERROR");
+  }
+}
+
 function handleSchema(req: Extract<WorkerRequest, { type: "schema" }>): void {
   if (!db) {
     fail(
@@ -464,6 +477,10 @@ globalThis.onmessage = (event: MessageEvent<WorkerRequest>) => {
   }
   if (req.type === "explain") {
     handleExplain(req);
+    return;
+  }
+  if (req.type === "diff-plans") {
+    handleDiffPlans(req);
     return;
   }
   if (req.type === "open-db") {

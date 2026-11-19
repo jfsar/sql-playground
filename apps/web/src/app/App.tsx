@@ -6,6 +6,7 @@ import { TableBrowser } from "../features/database-explorer/TableBrowser";
 import { ImportDatabaseDialog } from "../features/database-import/ImportDatabaseDialog";
 import { BackupReminder } from "../features/database-export/BackupReminder";
 import { HistoryPanel } from "../features/query-history/HistoryPanel";
+import { PlanDiffView } from "../features/query-analysis/PlanDiffView";
 import { PlanPanel } from "../features/query-analysis/PlanPanel";
 import { StatementBlock } from "../features/query-results/StatementBlock";
 import { SqlEditor, type SqlSelection } from "../features/sql-editor/SqlEditor";
@@ -43,6 +44,7 @@ import {
   type DatabaseInfo,
   type DatabaseSchema,
   type ExecutionResponse,
+  type PlanDiff,
   type QueryPlan,
   type StatementResult,
   type TablePage,
@@ -164,6 +166,10 @@ export default function App() {
   const [plan, setPlan] = useState<QueryPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [explaining, setExplaining] = useState(false);
+  const [pinnedPlan, setPinnedPlan] = useState<{ plan: QueryPlan; sql: string } | null>(null);
+  const [planDiff, setPlanDiff] = useState<PlanDiff | null>(null);
+  const [planDiffError, setPlanDiffError] = useState<string | null>(null);
+  const [diffing, setDiffing] = useState(false);
   const [restartMs, setRestartMs] = useState<number | null>(null);
   const [restarting, setRestarting] = useState(false);
   const [exportInfo, setExportInfo] = useState<string | null>(null);
@@ -315,6 +321,16 @@ export default function App() {
   // Switching databases closes the table browser so it never shows stale data.
   useEffect(() => {
     setBrowse(null);
+  }, [activeId]);
+
+  // A plan belongs to the database it was explained against; never compare
+  // plans across a database switch.
+  useEffect(() => {
+    setPlan(null);
+    setPlanError(null);
+    setPinnedPlan(null);
+    setPlanDiff(null);
+    setPlanDiffError(null);
   }, [activeId]);
 
   // One page at a time; a new table/offset cancels the previous result.
@@ -480,16 +496,48 @@ export default function App() {
     const script = sel !== null && sel.text.trim() !== "" ? sel.text : sql;
     setExplaining(true);
     setPlanError(null);
+    setPlanDiffError(null);
     try {
       const p = await database.explain(script);
       setPlan(p);
+      if (pinnedPlan) {
+        setDiffing(true);
+        try {
+          setPlanDiff(await database.diffPlans(pinnedPlan.plan, p));
+        } catch (err) {
+          setPlanDiff(null);
+          setPlanDiffError(err instanceof Error ? err.message : String(err));
+        } finally {
+          setDiffing(false);
+        }
+      } else {
+        setPlanDiff(null);
+      }
     } catch (err) {
       setPlan(null);
+      setPlanDiff(null);
       setPlanError(err instanceof Error ? err.message : String(err));
     } finally {
       setExplaining(false);
     }
-  }, [database, sql, selection]);
+  }, [database, sql, selection, pinnedPlan]);
+
+  // Plan comparison lite (plan §4, scenario 19): the pin lives in page state
+  // only; the diff itself runs in the worker's PlanToolkit.
+  const togglePinPlan = useCallback(() => {
+    if (pinnedPlan) {
+      setPinnedPlan(null);
+      setPlanDiff(null);
+      setPlanDiffError(null);
+      return;
+    }
+    if (!plan) return;
+    const sel = selection;
+    const script = sel !== null && sel.text.trim() !== "" ? sel.text : sql;
+    setPinnedPlan({ plan, sql: script });
+    setPlanDiff(null);
+    setPlanDiffError(null);
+  }, [pinnedPlan, plan, selection, sql]);
 
   // Open-transaction actions (plan §5.2 rule 6): nothing rolls back silently.
   const runTransactionCommand = useCallback(
@@ -998,6 +1046,33 @@ export default function App() {
           <div className="min-h-0 flex-1 overflow-y-auto">
             {rightTab === "analysis" ? (
               <div className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs text-neutral-500">
+                    Pin a plan, change the schema, then Explain again to compare.
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="pin-plan-button"
+                    onClick={togglePinPlan}
+                    disabled={!plan || explaining || diffing}
+                    className="rounded bg-amber-800 px-2 py-1 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-40"
+                  >
+                    {pinnedPlan ? "Unpin plan" : "Pin plan"}
+                  </button>
+                </div>
+                {pinnedPlan ? (
+                  <div
+                    data-testid="pinned-plan"
+                    className="rounded border border-amber-900 bg-amber-950/20 p-2 text-xs"
+                  >
+                    <div className="font-semibold text-amber-300">
+                      Pinned plan · SQLite {pinnedPlan.plan.sqliteVersion}
+                    </div>
+                    <div className="mt-1 line-clamp-3 whitespace-pre-wrap font-mono text-neutral-400">
+                      {pinnedPlan.sql}
+                    </div>
+                  </div>
+                ) : null}
                 {planError && (
                   <div
                     className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
@@ -1012,6 +1087,26 @@ export default function App() {
                   <p className="text-sm text-neutral-500">
                     Run Explain to see how SQLite processes the query: scans, searches, and index
                     usage, with the raw plan output preserved.
+                  </p>
+                ) : null}
+                {diffing ? (
+                  <p className="text-xs text-neutral-400" data-testid="plan-diff-busy">
+                    Comparing plans…
+                  </p>
+                ) : null}
+                {planDiffError ? (
+                  <div
+                    className="rounded border border-red-700 bg-red-950/40 p-2 text-xs text-red-200"
+                    data-testid="plan-diff-error"
+                  >
+                    plan comparison failed: {planDiffError}
+                  </div>
+                ) : null}
+                {planDiff ? <PlanDiffView diff={planDiff} /> : null}
+                {pinnedPlan && plan && !planDiff && !diffing && !planDiffError ? (
+                  <p className="text-xs text-neutral-500" data-testid="plan-diff-hint">
+                    The current plan is pinned. Change the schema and run Explain again to see a
+                    node-level diff.
                   </p>
                 ) : null}
               </div>

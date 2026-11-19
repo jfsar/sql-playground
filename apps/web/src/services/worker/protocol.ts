@@ -1,6 +1,7 @@
 import type {
   DatabaseSchema,
   ExecutionResponse,
+  PlanDiff,
   QueryPlan,
   SqliteImportResult,
   TablePage,
@@ -15,6 +16,7 @@ export type WorkerRequest =
   | { type: "execute"; requestId: string; sql: string; maxRows?: number }
   | { type: "status"; requestId: string }
   | { type: "explain"; requestId: string; sql: string }
+  | { type: "diff-plans"; requestId: string; before: QueryPlan; after: QueryPlan }
   | { type: "export"; requestId: string; filename?: string }
   | { type: "import-db"; requestId: string; filename: string; bytes: ArrayBuffer }
   | { type: "open-db"; requestId: string; filename: string }
@@ -28,6 +30,7 @@ export type WorkerResponse =
   | { type: "executed"; requestId: string; response: ExecutionResponse }
   | { type: "status-result"; requestId: string; status: WorkerStatus }
   | { type: "explained"; requestId: string; plan: QueryPlan }
+  | { type: "diffed"; requestId: string; diff: PlanDiff }
   | { type: "exported"; requestId: string; bytes: Uint8Array; name: string }
   | { type: "imported"; requestId: string; result: SqliteImportResult }
   | { type: "opened"; requestId: string; filename: string; sizeBytes: number }
@@ -42,6 +45,7 @@ const RESPONSE_TYPES = new Set([
   "executed",
   "status-result",
   "explained",
+  "diffed",
   "exported",
   "imported",
   "opened",

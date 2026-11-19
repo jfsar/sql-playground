@@ -136,6 +136,12 @@ fn parse_using(s: &str, tags: &mut Vec<String>) -> Option<String> {
     };
     let rest = rest.trim_start();
 
+    // 3.54 can report "AUTOMATIC COVERING INDEX"; match the longer form first.
+    if let Some(r) = strip_keyword(rest, "AUTOMATIC COVERING INDEX") {
+        push_tag(tags, "AUTOMATIC INDEX");
+        push_tag(tags, "COVERING INDEX");
+        return automatic_index_name(r);
+    }
     if let Some(r) = strip_keyword(rest, "COVERING INDEX") {
         push_tag(tags, "COVERING INDEX");
         return index_name(r);
@@ -145,16 +151,24 @@ fn parse_using(s: &str, tags: &mut Vec<String>) -> Option<String> {
     }
     if let Some(r) = strip_keyword(rest, "AUTOMATIC INDEX") {
         push_tag(tags, "AUTOMATIC INDEX");
-        // Form: "AUTOMATIC INDEX (i0 (a=?))" — name sits in the first parens.
-        let inner = r.trim_start().strip_prefix('(')?;
-        let (name, _) = first_token(inner);
-        let name = name.split('(').next().unwrap_or("").trim().to_string();
-        return if name.is_empty() { None } else { Some(name) };
+        return automatic_index_name(r);
     }
     if rest.starts_with("INTEGER PRIMARY KEY") {
         push_tag(tags, "INTEGER PRIMARY KEY");
     }
     None
+}
+
+/// Name of an automatic index, when SQLite reports one. Older builds use
+/// `(i0 (a=?))`; 3.54 reports `(a=?)` with no name, so the name is optional.
+fn automatic_index_name(s: &str) -> Option<String> {
+    let inner = s.trim_start().strip_prefix('(')?;
+    let (name, rest) = first_token(inner);
+    if !name.is_empty() && rest.trim_start().starts_with('(') {
+        Some(name)
+    } else {
+        None
+    }
 }
 
 /// Index name after `INDEX`/`COVERING INDEX`, tolerating a trailing `(…)`.
@@ -188,6 +202,9 @@ fn collect_common_tags(detail: &str, tags: &mut Vec<String>) {
     }
     if detail.contains("MATERIALIZE") {
         push_tag(tags, "MATERIALIZE");
+    }
+    if detail.contains("BLOOM FILTER") {
+        push_tag(tags, "BLOOM FILTER");
     }
 }
 
@@ -243,6 +260,30 @@ mod tests {
         assert_eq!(node.operation, Operation::Search);
         assert_eq!(node.index.as_deref(), Some("i0"));
         assert_eq!(node.tags, vec!["AUTOMATIC INDEX"]);
+    }
+
+    #[test]
+    fn parses_automatic_covering_index_search_3_54() {
+        let node = parse_node(&row(16, 0, "SEARCH b USING AUTOMATIC COVERING INDEX (y=?)"));
+        assert_eq!(node.operation, Operation::Search);
+        assert_eq!(node.table.as_deref(), Some("b"));
+        assert_eq!(node.index, None);
+        assert_eq!(node.tags, vec!["AUTOMATIC INDEX", "COVERING INDEX"]);
+    }
+
+    #[test]
+    fn parses_automatic_index_without_name_3_54() {
+        let node = parse_node(&row(16, 0, "SEARCH b USING AUTOMATIC INDEX (y=?)"));
+        assert_eq!(node.operation, Operation::Search);
+        assert_eq!(node.index, None);
+        assert_eq!(node.tags, vec!["AUTOMATIC INDEX"]);
+    }
+
+    #[test]
+    fn tags_bloom_filter() {
+        let node = parse_node(&row(7, 0, "BLOOM FILTER ON b (y=?)"));
+        assert_eq!(node.operation, Operation::Other);
+        assert_eq!(node.tags, vec!["BLOOM FILTER"]);
     }
 
     #[test]

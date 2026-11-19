@@ -14,6 +14,7 @@ import {
   type DatabaseInfo,
   type DatabaseSchema,
   type ExecutionResponse,
+  type PlanDiff,
   type QueryPlan,
   type ScriptImportResult,
   type SqliteImportResult,
@@ -36,6 +37,7 @@ export interface DatabaseBackend {
   execute(sql: string, opts?: { maxRows?: number; requestId?: string }): Promise<ExecutionResponse>;
   cancel(requestId: string): Promise<void>;
   explain(sql: string): Promise<QueryPlan>;
+  diffPlans(before: QueryPlan, after: QueryPlan): Promise<PlanDiff>;
   getSchema(): Promise<DatabaseSchema>;
   browseTable(table: string, page: { limit: number; offset: number }): Promise<TablePage>;
   importDb(filename: string, bytes: ArrayBuffer): Promise<SqliteImportResult>;
@@ -355,6 +357,11 @@ export class DatabaseService {
 
   explain(sql: string): Promise<QueryPlan> {
     return this.backend.explain(sql);
+  }
+
+  /** Node-level comparison of two plans (plan comparison lite, plan §4). */
+  diffPlans(before: QueryPlan, after: QueryPlan): Promise<PlanDiff> {
+    return this.backend.diffPlans(before, after);
   }
 
   /** Tables, views, columns, constraints, and indexes of the active database. */

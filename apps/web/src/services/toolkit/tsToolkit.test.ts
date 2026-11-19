@@ -52,6 +52,28 @@ describe("tsToolkit parsePlan", () => {
     expect(plan.nodes[1]?.index).toBeUndefined();
   });
 
+  it("parses 3.54 automatic indexes without a name", () => {
+    const plan = toolkit.parsePlan(
+      [
+        row(16, 0, "SEARCH b USING AUTOMATIC COVERING INDEX (y=?)"),
+        row(17, 0, "SEARCH b USING AUTOMATIC INDEX (y=?)"),
+      ],
+      "3.54.1",
+    );
+    expect(plan.nodes[0]?.operation).toBe("SEARCH");
+    expect(plan.nodes[0]?.table).toBe("b");
+    expect(plan.nodes[0]?.index).toBeUndefined();
+    expect(plan.nodes[0]?.tags).toEqual(["AUTOMATIC INDEX", "COVERING INDEX"]);
+    expect(plan.nodes[1]?.index).toBeUndefined();
+    expect(plan.nodes[1]?.tags).toEqual(["AUTOMATIC INDEX"]);
+  });
+
+  it("tags bloom filters reported by 3.54", () => {
+    const plan = toolkit.parsePlan([row(7, 0, "BLOOM FILTER ON b (y=?)")], "3.54.1");
+    expect(plan.nodes[0]?.operation).toBe("OTHER");
+    expect(plan.nodes[0]?.tags).toEqual(["BLOOM FILTER"]);
+  });
+
   it("tags temp b-tree, co-routine, and materialize details", () => {
     const plan = toolkit.parsePlan(
       [

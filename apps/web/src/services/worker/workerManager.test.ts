@@ -71,6 +71,16 @@ class FakeWorker {
           sqliteVersion: "3.54.1",
         },
       };
+    } else if (req.type === "diff-plans") {
+      res = {
+        type: "diffed",
+        requestId: req.requestId,
+        diff: {
+          added: [],
+          removed: [],
+          changed: [{ before: req.before.nodes[0]!, after: req.after.nodes[0]! }],
+        },
+      };
     } else if (req.type === "open-db") {
       this.active = req.filename;
       this.files.add(req.filename);
@@ -310,6 +320,26 @@ describe("WorkerManager", () => {
     expect(plan.nodes[0]?.operation).toBe("SCAN");
     expect(plan.raw[0]?.detail).toBe("SCAN t");
     expect(worker.posted.some((m) => m.type === "explain")).toBe(true);
+    manager.terminate();
+  });
+
+  it("diffs two plans through the worker toolkit", async () => {
+    const { manager, worker } = makeManager();
+    const before = await manager.explain("SELECT * FROM t");
+    const after = {
+      ...before,
+      nodes: before.nodes.map((node) => ({
+        ...node,
+        operation: "SEARCH" as const,
+        index: "idx_t",
+      })),
+    };
+    const diff = await manager.diffPlans(before, after);
+    expect(diff.changed).toHaveLength(1);
+    expect(diff.changed[0]?.before.operation).toBe("SCAN");
+    expect(diff.changed[0]?.after.operation).toBe("SEARCH");
+    const request = worker.posted.find((message) => message.type === "diff-plans");
+    expect(request).toMatchObject({ before, after });
     manager.terminate();
   });
 

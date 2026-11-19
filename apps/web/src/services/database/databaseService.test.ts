@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   DatabaseSchema,
   ExecutionResponse,
+  PlanDiff,
   QueryPlan,
   SqliteImportResult,
   TablePage,
@@ -31,6 +32,7 @@ const FAKE_RESPONSE: ExecutionResponse = {
 };
 
 const FAKE_PLAN: QueryPlan = { nodes: [], raw: [], sqliteVersion: "3.54.1" };
+const FAKE_DIFF: PlanDiff = { added: [], removed: [], changed: [] };
 const FAKE_SCHEMA: DatabaseSchema = { tables: [], views: [] };
 const FAKE_TABLE_PAGE: TablePage = {
   table: "t",
@@ -65,6 +67,7 @@ function makeBackend(
     execute: 0,
     cancel: 0,
     explain: 0,
+    diff: 0,
     schema: 0,
     browse: 0,
     import: 0,
@@ -91,6 +94,10 @@ function makeBackend(
     explain: async () => {
       calls.explain += 1;
       return FAKE_PLAN;
+    },
+    diffPlans: async () => {
+      calls.diff += 1;
+      return FAKE_DIFF;
     },
     getSchema: async () => {
       calls.schema += 1;
@@ -224,9 +231,11 @@ describe("DatabaseService lifecycle delegation", () => {
 
     await service.execute("SELECT 1");
     await service.explain("SELECT 1");
+    await service.diffPlans(FAKE_PLAN, FAKE_PLAN);
 
     expect(calls.execute).toBe(1);
     expect(calls.explain).toBe(1);
+    expect(calls.diff).toBe(1);
   });
 
   it("forwards execute options and cancels by request id", async () => {

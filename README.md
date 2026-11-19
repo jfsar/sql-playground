@@ -50,9 +50,9 @@ apps/web/          React + TypeScript application
   src/features/    sql-editor (CodeMirror 6), database-explorer, query-results,
                    query-analysis, query-history, database-import/export
   src/generated/   wasm-bindgen output (git-ignored, built by pnpm build:wasm)
-  e2e/             Playwright specs (PoC + Weeks 2–7)
+  e2e/             Playwright specs (PoC + Weeks 2–8)
 crates/query-analyzer/  Rust plan parser + diff (ADR-002, behind PlanToolkit)
-docs/adr/          ADR-001 … ADR-009
+docs/adr/          ADR-001 … ADR-010
 ```
 
 ## CI
@@ -227,4 +227,22 @@ the Safari matrix run still owed before release.
       mid-step does not silently fall back to in-memory (ADR-004/ADR-001)
 - [x] ADR-004 updated with the Week 7 implementation, finding, and measurements
 - [x] 228 unit tests + 27 e2e tests green (dev + production build)
+- [ ] Safari 17+ run (pending macOS; ADR-001/002/005 note it)
+
+### Week 8
+
+- [x] Plan tree built from SQLite EQP rows (forest roots, input order,
+      duplicate/missing parents degrade safely) with nested `tree` semantics
+- [x] Neutral per-node explanations (scan, search, covering/automatic index,
+      integer primary key, temp B-tree, co-routine, materialize, Bloom filter);
+      no good/bad/optimal labels; unknown forms fall back to raw detail
+- [x] Raw `id|parent|detail` output kept one click away in a collapsed
+      `<details>` element
+- [x] Plan comparison lite: pin the current plan, change the schema, Explain
+      again, and see node-level added/removed/changed rows (scenario 19);
+      the diff runs in the worker through `PlanToolkit`
+- [x] Parser updated for SQLite 3.54 automatic-covering-index and Bloom-filter
+      forms; version-pinned fixtures assert the live engine still emits them
+- [x] ADR-010 written; 271 unit tests + 29 e2e tests green (dev + production
+      build), 19 Rust tests
 - [ ] Safari 17+ run (pending macOS; ADR-001/002/005 note it)

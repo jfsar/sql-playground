@@ -1,6 +1,7 @@
 import type {
   DatabaseSchema,
   ExecutionResponse,
+  PlanDiff,
   QueryPlan,
   SqliteImportResult,
   TablePage,
@@ -371,6 +372,22 @@ export class WorkerManager {
         throw new Error(`Unexpected explain response: ${res.type}`);
       }
       return res.plan;
+    });
+  }
+
+  /** Compare two parsed plans through the worker's PlanToolkit (plan §4). */
+  async diffPlans(before: QueryPlan, after: QueryPlan): Promise<PlanDiff> {
+    if (this.terminated) {
+      throw new Error("WorkerManager has been terminated");
+    }
+    await this.init();
+    const requestId = this.nextRequestId();
+    return this.enqueue(requestId, async () => {
+      const res = await this.send({ type: "diff-plans", requestId, before, after });
+      if (res.type !== "diffed") {
+        throw new Error(`Unexpected diff-plans response: ${res.type}`);
+      }
+      return res.diff;
     });
   }
 
