@@ -185,8 +185,56 @@ export interface WorkerStatus {
   journalMode: string;
 }
 
+/** Import/export contracts (plan §5.5, §7 Week 6). */
+
+export type ImportKind = "sqlite" | "sql";
+
+export type ImportWarningCode = "WAL_MODE" | "LARGE_FILE" | "VERY_LARGE_FILE" | "EMPTY_SCRIPT";
+
+export interface ImportWarning {
+  code: ImportWarningCode;
+  message: string;
+}
+
+export interface ImportReport {
+  kind: ImportKind;
+  fileName: string;
+  sizeBytes: number;
+  /** True when the file can be imported (warnings do not block). */
+  ok: boolean;
+  /** Present when `ok` is false. */
+  error?: DbError;
+  pageSize?: number;
+  /** Journal mode detected from the file header ("delete", "wal", "unknown"). */
+  journalMode?: string;
+  warnings: ImportWarning[];
+}
+
+/** Result of staging and checking a SQLite database in the worker. */
+export interface SqliteImportResult {
+  filename: string;
+  sizeBytes: number;
+  pageSize: number;
+  journalMode: string;
+  quickCheck: string;
+  /** "off" when the hardened probe succeeded, "blocked" when the schema rejected it. */
+  trustedSchema: "off" | "blocked" | "unsupported";
+  defensiveMode: boolean;
+}
+
+export interface ScriptImportResult {
+  response: ExecutionResponse;
+  /** The target database, or null when a new database was rolled back. */
+  database: DatabaseInfo | null;
+  rolledBack: boolean;
+}
+
 export const DEFAULT_MAX_ROWS = 1000;
 
 /** Table browser page size (plan §7 Week 5: LIMIT/OFFSET paging for MVP). */
 export const TABLE_PAGE_SIZE = 50;
 export const MAX_TABLE_PAGE_SIZE = 500;
+
+/** Import size policy (plan §5.5). */
+export const IMPORT_WARN_BYTES = 100 * 1024 * 1024;
+export const IMPORT_STRONG_WARN_BYTES = 250 * 1024 * 1024;

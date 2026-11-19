@@ -48,11 +48,11 @@ apps/web/          React + TypeScript application
                    storage (metadata DB, reconcile, quota, tab guard)
   src/workers/     sqlite.worker.ts (WASM + opfs-sahpool + PlanToolkit + file ops)
   src/features/    sql-editor (CodeMirror 6), database-explorer, query-results,
-                   query-analysis components
+                   query-analysis, query-history, database-import/export
   src/generated/   wasm-bindgen output (git-ignored, built by pnpm build:wasm)
-  e2e/             Playwright specs (PoC + Week 2 + Week 3 + Week 4)
+  e2e/             Playwright specs (PoC + Weeks 2–7)
 crates/query-analyzer/  Rust plan parser + diff (ADR-002, behind PlanToolkit)
-docs/adr/          ADR-001 … ADR-007
+docs/adr/          ADR-001 … ADR-009
 ```
 
 ## CI
@@ -188,4 +188,43 @@ the Safari matrix run still owed before release.
       notice (NFR-11, audited Week 9)
 - [x] ADR-004 restart with an open transaction surfaces the rollback notice
 - [x] ADR-007 written; 152 unit tests + 19 e2e tests green
+- [ ] Safari 17+ run (pending macOS; ADR-001/002/005 note it)
+
+### Week 6
+
+- [x] SQLite import pipeline: in-memory header/page/truncation validation,
+      WAL-header warning, UUID-named staging, `quick_check` before metadata,
+      cleanup and previous-database recovery on failure (plan §5.5)
+- [x] `.sql` script import through the execution contract into a new or
+      existing database; failed new imports are rolled back and removed
+- [x] Export as a real `.sqlite3` download (empty databases initialized so the
+      file always has a valid SQLite header)
+- [x] 100 MB confirmation / 250 MB strong warning; quota check before import;
+      import disabled when OPFS is unavailable
+- [x] `trusted_schema=OFF` + defensive-mode probe recorded per import;
+      security decision documented in ADR-009
+- [x] Dismissible backup reminder: never-exported or seven-day-overdue, with
+      export timestamp stored locally only
+- [x] ADR-009 written; ADR-001 has the Week 6 trusted-schema result
+- [x] 223 unit tests + 25 e2e tests green (dev + production build)
+- [ ] Safari 17+ run (pending macOS; ADR-001/002/005 note it)
+
+### Week 7
+
+- [x] Per-request cancellation: `execute({ requestId })` + `cancel(requestId)`
+      through `DatabaseService` and the Worker Manager; in-flight requests
+      terminate/restart, queued requests are rejected before they are sent
+- [x] Queue generations reject work waiting behind a cancelled/crashed request
+      instead of running it on the fresh worker
+- [x] Worker crash handling: in-flight requests reject with
+      `DbOperationError("WORKER_CRASHED")` and the worker restarts automatically
+      (init failures surface instead of looping)
+- [x] Long-query UX: live elapsed timer and Cancel while a query is running
+- [x] Mid-write termination e2e: committed rows survive, the uncommitted
+      transaction is rolled back by journal recovery, and the rollback notice
+      is shown
+- [x] Transient OPFS handle-release retry (≈2.8 s budget) so a worker killed
+      mid-step does not silently fall back to in-memory (ADR-004/ADR-001)
+- [x] ADR-004 updated with the Week 7 implementation, finding, and measurements
+- [x] 228 unit tests + 27 e2e tests green (dev + production build)
 - [ ] Safari 17+ run (pending macOS; ADR-001/002/005 note it)

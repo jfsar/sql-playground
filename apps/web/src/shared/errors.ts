@@ -20,6 +20,10 @@ export const DB_ERROR_CODES = [
 
 export type DbErrorCode = (typeof DB_ERROR_CODES)[number];
 
+export function isDbErrorCode(code: string): code is DbErrorCode {
+  return (DB_ERROR_CODES as readonly string[]).includes(code);
+}
+
 export interface ErrorGuidance {
   /** Short label for the failure category. */
   title: string;

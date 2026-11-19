@@ -48,6 +48,11 @@ Firefox 159; production Vite build (`E2E_PREVIEW=1`) unless noted.
 | Handles/locks released when the worker is terminated | ✅ Terminate → fresh worker → VFS reinstall → database reopens intact; restart measured at **87 ms** (Chromium, production), 103 ms (Chromium, dev), 264 ms (Firefox, dev) — see ADR-004 |
 | Safari 17+ | ⏳ **Pending manual verification** (requires macOS; not runnable on this Windows machine). The suite is browser-agnostic; risk is limited to OPFS/Safari quirks |
 
+**Week 7 refinement:** handle release after `terminate()` is not instantaneous
+when the worker dies mid-`sqlite3_step`. The fresh worker can briefly see
+`NoModificationAllowedError` while installing `opfs-sahpool`; it now retries
+transient handle-lock errors before falling back to in-memory. See ADR-004.
+
 ## Consequences
 
 - Static hosting needs no special headers; Cloudflare Pages/Workers static
@@ -63,3 +68,19 @@ Firefox 159; production Vite build (`E2E_PREVIEW=1`) unless noted.
 - If Safari verification fails, the fallback is the default `opfs` VFS with
   COOP/COEP headers via a hosting `_headers` file (re-decide in a follow-up
   ADR).
+
+## Week 6 `trusted_schema` evaluation
+
+Imported databases are probed after `PRAGMA quick_check` with
+`PRAGMA trusted_schema=OFF` (and `PRAGMA defensive=ON` where exposed). The
+probe result is returned in the worker's `SqliteImportResult`:
+
+- `off` — the staged schema loaded with hardened pragmas.
+- `blocked` — the schema rejected `trusted_schema=OFF`; the connection falls
+  back to `trusted_schema=ON` so the database stays usable.
+- `unsupported` — the build does not expose the pragma.
+
+The Week 6 e2e suite imports real exported databases and WAL-flagged copies
+through this path, and the import path works with the probe enabled. The
+hardened mode is defense in depth only; the primary containment remains the
+WASM sandbox plus cancellation/recovery (ADR-004).

@@ -1,11 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   DatabaseSchema,
   ExecutionResponse,
   QueryPlan,
+  SqliteImportResult,
   TablePage,
   WorkerStatus,
 } from "../../shared/contracts";
+import { DbOperationError } from "../../shared/errors";
 import { DatabaseService, DEFAULT_DATABASE_NAME, type DatabaseBackend } from "./databaseService";
 import { SAMPLE_DATABASE_NAME } from "./sampleDatabase";
 import { StorageService } from "../storage/storageService";
@@ -39,11 +41,37 @@ const FAKE_TABLE_PAGE: TablePage = {
   offset: 0,
 };
 
+const FAKE_IMPORT_RESULT: SqliteImportResult = {
+  filename: "/db_imported.sqlite3",
+  sizeBytes: 4096,
+  pageSize: 4096,
+  journalMode: "delete",
+  quickCheck: "ok",
+  trustedSchema: "off",
+  defensiveMode: true,
+};
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 function makeBackend(
   overrides: Partial<WorkerStatus> = {},
   executeResponse: ExecutionResponse = FAKE_RESPONSE,
 ) {
-  const calls = { init: 0, status: 0, execute: 0, explain: 0, schema: 0, browse: 0 };
+  const calls = {
+    init: 0,
+    status: 0,
+    execute: 0,
+    cancel: 0,
+    explain: 0,
+    schema: 0,
+    browse: 0,
+    import: 0,
+    export: 0,
+    open: 0,
+    delete: 0,
+  };
   const backend: DatabaseBackend = {
     init: async () => {
       calls.init += 1;
@@ -57,6 +85,9 @@ function makeBackend(
       calls.execute += 1;
       return executeResponse;
     },
+    cancel: async () => {
+      calls.cancel += 1;
+    },
     explain: async () => {
       calls.explain += 1;
       return FAKE_PLAN;
@@ -68,6 +99,22 @@ function makeBackend(
     browseTable: async (table, page) => {
       calls.browse += 1;
       return { ...FAKE_TABLE_PAGE, table, limit: page.limit, offset: page.offset };
+    },
+    importDb: async (filename, bytes) => {
+      calls.import += 1;
+      return { ...FAKE_IMPORT_RESULT, filename, sizeBytes: bytes.byteLength };
+    },
+    exportFile: async (filename) => {
+      calls.export += 1;
+      return { bytes: new Uint8Array([1, 2, 3]), name: filename.replace(/^\//, "") };
+    },
+    openFile: async () => {
+      calls.open += 1;
+      return 4096;
+    },
+    deleteFile: async () => {
+      calls.delete += 1;
+      return { existed: true };
     },
   };
   return { backend, calls };
@@ -86,7 +133,7 @@ function makeService(
   for (const file of seedParameters.files ?? []) worker.files.add(file);
   const storage = new StorageService({ store, worker, now: () => 5000 });
   const service = new DatabaseService({ backend, storage });
-  return { service, worker, store, calls, storage };
+  return { service, backend, worker, store, calls, storage };
 }
 
 describe("DatabaseService.startup", () => {
@@ -180,6 +227,18 @@ describe("DatabaseService lifecycle delegation", () => {
 
     expect(calls.execute).toBe(1);
     expect(calls.explain).toBe(1);
+  });
+
+  it("forwards execute options and cancels by request id", async () => {
+    const { service, backend, calls } = makeService();
+    const execute = vi.spyOn(backend, "execute");
+    await service.startup();
+
+    await service.execute("SELECT 1", { requestId: "run-1", maxRows: 5 });
+    await service.cancel("run-1");
+
+    expect(execute).toHaveBeenCalledWith("SELECT 1", { requestId: "run-1", maxRows: 5 });
+    expect(calls.cancel).toBe(1);
   });
 
   it("switching databases opens the target file", async () => {
@@ -282,5 +341,226 @@ describe("DatabaseService sample database and explorer delegation", () => {
     expect(calls.schema).toBe(1);
     expect(calls.browse).toBe(1);
     expect(page).toMatchObject({ limit: 500, offset: 0 });
+  });
+});
+
+const IMPORT_ID = "11111111-1111-4111-8111-111111111111";
+
+function sqliteBytes(pageSize = 512): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(pageSize);
+  const header = "SQLite format 3\0";
+  for (let i = 0; i < header.length; i += 1) bytes[i] = header.charCodeAt(i);
+  bytes[16] = (pageSize >> 8) & 0xff;
+  bytes[17] = pageSize & 0xff;
+  bytes[18] = 1;
+  bytes[19] = 1;
+  return bytes;
+}
+
+function makeImportService(executeResponse: ExecutionResponse = FAKE_RESPONSE) {
+  const { backend, calls } = makeBackend({}, executeResponse);
+  const worker = new FakeStorageWorker();
+  const store = makeStore();
+  backend.importDb = async (filename, bytes) => {
+    calls.import += 1;
+    worker.files.add(filename);
+    worker.activeFilename = filename;
+    return { ...FAKE_IMPORT_RESULT, filename, sizeBytes: bytes.byteLength };
+  };
+  backend.openFile = async (filename) => {
+    calls.open += 1;
+    worker.files.add(filename);
+    worker.activeFilename = filename;
+    return 4096;
+  };
+  backend.deleteFile = async (filename) => {
+    calls.delete += 1;
+    const existed = worker.files.delete(filename);
+    if (worker.activeFilename === filename) worker.activeFilename = null;
+    return { existed };
+  };
+  const storage = new StorageService({ store, worker, now: () => 5000 });
+  const service = new DatabaseService({ backend, storage });
+  return { service, backend, calls, worker, store, storage };
+}
+
+describe("DatabaseService imports and exports", () => {
+  it("stages a new database, registers metadata, and keeps existing entries", async () => {
+    const { service, worker, store, calls } = makeImportService();
+    const previous = await service.createDatabase("Previous");
+    vi.spyOn(crypto, "randomUUID").mockReturnValue(IMPORT_ID);
+
+    const info = await service.importDatabase(new File([sqliteBytes()], "my-import.db"), {
+      name: "Imported",
+      now: 123,
+    });
+
+    expect(calls.import).toBe(1);
+    expect(info).toMatchObject({
+      id: IMPORT_ID,
+      name: "Imported",
+      sizeBytes: 512,
+      createdAt: 123,
+      lastOpenedAt: 123,
+      status: "ok",
+    });
+    expect(worker.files.has(dbFileName(IMPORT_ID))).toBe(true);
+    expect(worker.files.has(dbFileName(previous.id))).toBe(true);
+    expect(store.rows.get(IMPORT_ID)?.name).toBe("Imported");
+  });
+
+  it("rejects invalid files before touching storage", async () => {
+    const { service, calls } = makeImportService();
+
+    await expect(
+      service.importDatabase(new File([new Uint8Array([1, 2, 3])], "bad.db")),
+    ).rejects.toMatchObject({ code: "UNSUPPORTED_FILE" });
+    expect(calls.import).toBe(0);
+    expect(calls.delete).toBe(0);
+  });
+
+  it("blocks imports that exceed the storage estimate", async () => {
+    const { service, calls } = makeImportService();
+    const storageInfo = {
+      estimateSupported: true,
+      usageBytes: 900,
+      quotaBytes: 1000,
+      persisted: false,
+      opfsSupported: true,
+    };
+
+    await expect(
+      service.importDatabase(new File([sqliteBytes()], "large.db"), {
+        storageInfo,
+      }),
+    ).rejects.toMatchObject({ code: "QUOTA" });
+    expect(calls.import).toBe(0);
+  });
+
+  it("cleans up and restores the previous database when import fails", async () => {
+    const { service, backend, worker, calls } = makeImportService();
+    const previous = await service.createDatabase("Previous");
+    vi.spyOn(crypto, "randomUUID").mockReturnValue(IMPORT_ID);
+    backend.importDb = async () => {
+      calls.import += 1;
+      throw new DbOperationError("CORRUPT_FILE", "quick_check failed");
+    };
+
+    await expect(
+      service.importDatabase(new File([sqliteBytes()], "broken.db")),
+    ).rejects.toMatchObject({ code: "CORRUPT_FILE" });
+
+    expect(calls.delete).toBe(1);
+    expect(calls.open).toBe(1);
+    expect(worker.activeFilename).toBe(dbFileName(previous.id));
+  });
+
+  it("removes the staged file when metadata registration fails", async () => {
+    const { service, storage, calls } = makeImportService();
+    const previous = await service.createDatabase("Previous");
+    vi.spyOn(crypto, "randomUUID").mockReturnValue(IMPORT_ID);
+    vi.spyOn(storage, "registerImportedDatabase").mockRejectedValue(
+      new DbOperationError("STORAGE_UNAVAILABLE", "metadata failed"),
+    );
+
+    await expect(service.importDatabase(new File([sqliteBytes()], "valid.db"))).rejects.toThrow(
+      "metadata failed",
+    );
+
+    expect(calls.delete).toBe(1);
+    expect(calls.open).toBe(1);
+    expect((await service.listDatabases()).map((database) => database.id)).toEqual([previous.id]);
+  });
+
+  it("imports a script into a new database and rolls it back on failure", async () => {
+    const { service, calls } = makeImportService();
+    const sql = new File([new TextEncoder().encode("SELECT 1;")], "ok.sql");
+
+    const ok = await service.importScript(sql, { name: "Imported script" });
+    expect(ok.rolledBack).toBe(false);
+    expect(ok.database?.name).toBe("Imported script");
+    expect(calls.execute).toBe(1);
+
+    const failing: ExecutionResponse = {
+      statements: [
+        {
+          kind: "error",
+          sql: "SELECT broken;",
+          error: { code: "SQL_ERROR", message: "syntax error" },
+          span: { start: 0, end: 15, text: "SELECT broken;" },
+        },
+      ],
+      inTransaction: false,
+      totalEngineMs: 1,
+    };
+    const failingService = makeImportService(failing);
+    const before = await failingService.service.createDatabase("Previous failure");
+    const result = await failingService.service.importScript(
+      new File([new TextEncoder().encode("SELECT broken;")], "bad.sql"),
+      { name: "Broken script" },
+    );
+
+    expect(result.rolledBack).toBe(true);
+    expect(result.database).toBeNull();
+    const ids = (await failingService.service.listDatabases()).map((database) => database.id);
+    expect(ids).toEqual([before.id]);
+    expect(failingService.worker.activeFilename).toBe(dbFileName(before.id));
+  });
+
+  it("rolls back a new script target when execution rejects", async () => {
+    const { service, backend, worker, calls } = makeImportService();
+    const before = await service.createDatabase("Previous");
+    backend.execute = async () => {
+      calls.execute += 1;
+      throw new DbOperationError("IO", "worker lost");
+    };
+
+    await expect(
+      service.importScript(new File([new TextEncoder().encode("SELECT 1;")], "lost.sql"), {
+        name: "Lost script",
+      }),
+    ).rejects.toThrow("worker lost");
+
+    expect((await service.listDatabases()).map((database) => database.id)).toEqual([before.id]);
+    expect(worker.activeFilename).toBe(dbFileName(before.id));
+  });
+
+  it("runs a script against an existing database without rolling it back", async () => {
+    const failing: ExecutionResponse = {
+      statements: [
+        {
+          kind: "error",
+          sql: "SELECT broken;",
+          error: { code: "SQL_ERROR", message: "syntax error" },
+          span: { start: 0, end: 15, text: "SELECT broken;" },
+        },
+      ],
+      inTransaction: false,
+      totalEngineMs: 1,
+    };
+    const { service } = makeImportService(failing);
+    const target = await service.createDatabase("Target");
+
+    const result = await service.importScript(
+      new File([new TextEncoder().encode("SELECT broken;")], "bad.sql"),
+      { targetId: target.id },
+    );
+
+    expect(result.rolledBack).toBe(false);
+    expect(result.database?.id).toBe(target.id);
+    expect((await service.listDatabases()).map((database) => database.id)).toContain(target.id);
+  });
+
+  it("exports a named database as a blob", async () => {
+    const { service, calls } = makeImportService();
+    const database = await service.createDatabase("Export me");
+
+    const blob = await service.exportDatabase(database.id);
+
+    expect(blob.size).toBe(3);
+    expect(calls.export).toBe(1);
+    await expect(service.exportDatabase("missing")).rejects.toMatchObject({
+      code: "STORAGE_UNAVAILABLE",
+    });
   });
 });

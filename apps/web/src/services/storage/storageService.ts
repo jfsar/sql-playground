@@ -126,6 +126,21 @@ export class StorageService {
   }
 
   /**
+   * Add metadata for a file the worker already staged and validated. The file
+   * must exist: metadata is written only after import validation (plan §5.5).
+   */
+  async registerImportedDatabase(info: DatabaseInfo): Promise<void> {
+    const files = await this.worker.listFiles();
+    if (!files.includes(dbFileName(info.id))) {
+      throw new DbOperationError(
+        "STORAGE_UNAVAILABLE",
+        "The imported file is missing from browser storage; import it again.",
+      );
+    }
+    await this.store.putDatabase(info);
+  }
+
+  /**
    * Open an existing database (closes the previous connection first — the
    * worker enforces one connection at a time, ADR-001).
    */

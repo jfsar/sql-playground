@@ -3,6 +3,8 @@ import { TabBlockedScreen } from "./TabBlockedScreen";
 import { DatabaseExplorer } from "../features/database-explorer/DatabaseExplorer";
 import { SchemaExplorer } from "../features/database-explorer/SchemaExplorer";
 import { TableBrowser } from "../features/database-explorer/TableBrowser";
+import { ImportDatabaseDialog } from "../features/database-import/ImportDatabaseDialog";
+import { BackupReminder } from "../features/database-export/BackupReminder";
 import { HistoryPanel } from "../features/query-history/HistoryPanel";
 import { PlanPanel } from "../features/query-analysis/PlanPanel";
 import { StatementBlock } from "../features/query-results/StatementBlock";
@@ -14,6 +16,12 @@ import {
   requestPersistentStorage,
   type StorageInfo,
 } from "../services/storage/quota";
+import {
+  dismissBackupReminder,
+  getBackupStatus,
+  recordBackup,
+  type BackupStatus,
+} from "../services/storage/backupReminder";
 import { idFromDbFileName } from "../services/storage/reconcile";
 import { StorageService } from "../services/storage/storageService";
 import {
@@ -110,6 +118,29 @@ function StatementBlockList({
 
 type TabLockState = "pending" | "owned" | "blocked";
 
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function exportFileName(name: string): string {
+  const safe = name
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ");
+  return `${safe.length > 0 ? safe : "database"}.sqlite3`;
+}
+
+function formatElapsed(ms: number): string {
+  return `${(Math.max(0, ms) / 1000).toFixed(1)} s`;
+}
+
 export default function App() {
   const managerRef = useRef<WorkerManager | null>(null);
   const databaseRef = useRef<DatabaseService | null>(null);
@@ -127,6 +158,9 @@ export default function App() {
   const [response, setResponse] = useState<ExecutionResponse | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [runElapsedMs, setRunElapsedMs] = useState(0);
+  const cancelRequestRef = useRef<string | null>(null);
   const [plan, setPlan] = useState<QueryPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [explaining, setExplaining] = useState(false);
@@ -134,6 +168,8 @@ export default function App() {
   const [restarting, setRestarting] = useState(false);
   const [exportInfo, setExportInfo] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [backupStatus, setBackupStatus] = useState<BackupStatus>(() => getBackupStatus(Date.now()));
   const [selection, setSelection] = useState<SqlSelection | null>(null);
   const [errorMark, setErrorMark] = useState<{ from: number; to: number } | null>(null);
   // Snapshot of what was executed, so error line/column stays anchored to the
@@ -212,10 +248,24 @@ export default function App() {
     getStorageInfo().then((info) => {
       if (!cancelled) setStorageInfo(info);
     });
+    setBackupStatus(getBackupStatus(Date.now()));
     return () => {
       cancelled = true;
     };
   }, [tabLock]);
+
+  // Long-query UX (plan §5.4): a visible elapsed timer while work is running.
+  useEffect(() => {
+    if (!running || runStartedAt === null) {
+      setRunElapsedMs(0);
+      return;
+    }
+    setRunElapsedMs(performance.now() - runStartedAt);
+    const timer = setInterval(() => {
+      setRunElapsedMs(performance.now() - runStartedAt);
+    }, 100);
+    return () => clearInterval(timer);
+  }, [running, runStartedAt]);
 
   // Query history: load the opt-out preference and the newest entries once.
   useEffect(() => {
@@ -381,11 +431,14 @@ export default function App() {
     const useSelection = sel !== null && sel.text.trim() !== "";
     const script = useSelection && sel ? sel.text : sql;
     const docStart = useSelection && sel ? sel.from : 0;
+    const requestId = crypto.randomUUID();
+    cancelRequestRef.current = requestId;
     setRunning(true);
+    setRunStartedAt(performance.now());
     setRunError(null);
     setRestartTxNotice(false);
     try {
-      const res = await database.execute(script);
+      const res = await database.execute(script, { requestId });
       setResponse(res);
       setRunContext({ doc: sql, docStart });
       const err = res.statements.find((s) => s.kind === "error");
@@ -401,11 +454,26 @@ export default function App() {
       setResponse(null);
       setRunContext(null);
       setErrorMark(null);
-      setRunError(err instanceof Error ? err.message : String(err));
+      if (err instanceof DbOperationError) {
+        const guidance = describeDbError(err.code, err.message);
+        setRunError(`${guidance.message} ${guidance.nextStep}`);
+        if (err.code === "WORKER_CRASHED") {
+          // Crash auto-recovery started in the manager; refresh the status so
+          // the UI stops showing the pre-crash worker state.
+          void manager
+            .status()
+            .then(setStatus)
+            .catch(() => undefined);
+        }
+      } else {
+        setRunError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
+      if (cancelRequestRef.current === requestId) cancelRequestRef.current = null;
       setRunning(false);
+      setRunStartedAt(null);
     }
-  }, [database, recordHistory, sql, selection]);
+  }, [database, recordHistory, sql, selection, manager]);
 
   const explain = useCallback(async () => {
     const sel = selection;
@@ -444,47 +512,98 @@ export default function App() {
     [database],
   );
 
-  const restartWorker = useCallback(async () => {
-    const hadOpenTransaction = response?.inTransaction ?? false;
-    setRestarting(true);
-    setInitError(null);
-    setRestartMs(null); // reappearing = restart finished (e2e waits on it)
-    const start = performance.now();
-    try {
-      const s = await manager.restart();
-      setRestartMs(performance.now() - start);
-      setStatus(s);
-      setResponse(null);
-      setRunContext(null);
-      setErrorMark(null);
-      // ADR-004: SQLite rolls back an open transaction when the connection
-      // dies — say so instead of losing the indicator silently.
-      setRestartTxNotice(hadOpenTransaction);
-      // runError is kept: an in-flight run surfaces "Query cancelled; worker
-      // restarted." here (ADR-004) and must not be swallowed by this restart.
-    } catch (err) {
-      setInitError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRestarting(false);
-    }
-  }, [manager, response]);
+  const recoverWorker = useCallback(
+    async (recover: () => Promise<unknown>) => {
+      const hadOpenTransaction = response?.inTransaction ?? false;
+      setRestarting(true);
+      setInitError(null);
+      setRestartMs(null); // reappearing = restart finished (e2e waits on it)
+      const start = performance.now();
+      try {
+        await recover();
+        setRestartMs(performance.now() - start);
+        const s = await manager.status();
+        setStatus(s);
+        setResponse(null);
+        setRunContext(null);
+        setErrorMark(null);
+        // ADR-004: SQLite rolls back an open transaction when the connection
+        // dies — say so instead of losing the indicator silently.
+        setRestartTxNotice(hadOpenTransaction);
+        // runError is kept: an in-flight run surfaces "Query cancelled; worker
+        // restarted." here (ADR-004) and must not be swallowed by this restart.
+      } catch (err) {
+        setInitError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setRestarting(false);
+      }
+    },
+    [manager, response],
+  );
 
-  const exportDb = useCallback(async () => {
+  const restartWorker = useCallback(
+    () => recoverWorker(() => manager.restart()),
+    [manager, recoverWorker],
+  );
+
+  // Plan §5.3/§5.4: cancel this run by id. The manager restarts only if the
+  // request is in flight and reopens the database; queued work is rejected.
+  const cancelRun = useCallback(() => {
+    const requestId = cancelRequestRef.current;
+    return recoverWorker(() => (requestId ? database.cancel(requestId) : manager.restart()));
+  }, [database, manager, recoverWorker]);
+
+  const exportActiveDatabase = useCallback(async () => {
+    const target = databases.find((database) => database.id === activeId);
+    if (!target) {
+      setExportInfo("No database is open to export.");
+      return;
+    }
     setExporting(true);
     setExportInfo(null);
     try {
-      const { bytes, name } = await manager.exportDb();
-      const header = new TextDecoder().decode(bytes.slice(0, 16));
-      const ok = header.startsWith("SQLite format 3");
-      setExportInfo(
-        `exported ${name} · ${bytes.byteLength} bytes · header ${ok ? "OK" : "INVALID"}`,
-      );
+      const blob = await database.exportDatabase(target.id);
+      const filename = exportFileName(target.name);
+      downloadBlob(blob, filename);
+      recordBackup(Date.now());
+      setBackupStatus(getBackupStatus(Date.now()));
+      setExportInfo(`exported ${filename} · ${blob.size} bytes`);
+      if (!storageInfo || !storageInfo.persisted) {
+        setStorageInfo(await getStorageInfo());
+      }
     } catch (err) {
       setExportInfo(err instanceof Error ? err.message : String(err));
     } finally {
       setExporting(false);
     }
-  }, [manager]);
+  }, [activeId, database, databases, storageInfo]);
+
+  const handleImported = useCallback(() => {
+    void refreshDatabases();
+    setSchemaVersion((version) => version + 1);
+    setTableVersion((version) => version + 1);
+    setBackupStatus(getBackupStatus(Date.now()));
+  }, [refreshDatabases]);
+
+  const importDatabaseFile = useCallback(
+    (file: File, opts: { name: string; storageInfo: StorageInfo | null }) =>
+      database.importDatabase(file, {
+        name: opts.name,
+        storageInfo: opts.storageInfo ?? undefined,
+      }),
+    [database],
+  );
+
+  const importScriptFile = useCallback(
+    (file: File, opts: { targetId?: string; name?: string }) => database.importScript(file, opts),
+    [database],
+  );
+
+  const dismissBackup = useCallback(() => {
+    const now = Date.now();
+    dismissBackupReminder(now);
+    setBackupStatus(getBackupStatus(now));
+  }, []);
 
   const requestPersist = useCallback(async () => {
     await requestPersistentStorage();
@@ -604,6 +723,11 @@ export default function App() {
       <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)_320px] overflow-hidden">
         {/* Explorer sidebar (plan §5.1) */}
         <aside className="flex min-h-0 flex-col border-r border-neutral-800">
+          <BackupReminder
+            status={backupStatus}
+            onExport={() => void exportActiveDatabase()}
+            onDismiss={dismissBackup}
+          />
           <div className="flex min-h-0 basis-[45%] shrink-0 flex-col overflow-hidden">
             <DatabaseExplorer
               databases={databases}
@@ -614,6 +738,7 @@ export default function App() {
               onOpen={(id) => void runDbOp(() => database.openDatabase(id))}
               onCreate={(name) => void runDbOp(() => database.createDatabase(name))}
               onCreateSample={() => void runDbOp(() => database.createSampleDatabase())}
+              onImport={() => setImportOpen(true)}
               onRename={(id, name) => void runDbOp(() => database.renameDatabase(id, name))}
               onDelete={(id) => void runDbOp(() => database.deleteDatabase(id))}
               onRequestPersistence={() => void requestPersist()}
@@ -658,8 +783,8 @@ export default function App() {
                 <button
                   type="button"
                   data-testid="export-button"
-                  onClick={() => void exportDb()}
-                  disabled={exporting || !status}
+                  onClick={() => void exportActiveDatabase()}
+                  disabled={exporting || !status || !activeId}
                   className="rounded bg-neutral-700 px-2 py-1.5 font-medium text-neutral-100 hover:bg-neutral-600 disabled:opacity-40"
                 >
                   {exporting ? "Exporting…" : "Export"}
@@ -674,15 +799,24 @@ export default function App() {
                   {explaining ? "Explaining…" : "Explain"}
                 </button>
                 {running && (
-                  <button
-                    type="button"
-                    data-testid="cancel-button"
-                    onClick={() => void restartWorker()}
-                    disabled={restarting}
-                    className="rounded bg-red-800 px-2 py-1.5 font-medium text-white hover:bg-red-700 disabled:opacity-40"
-                  >
-                    Cancel
-                  </button>
+                  <>
+                    <span
+                      data-testid="run-elapsed"
+                      aria-live="off"
+                      className="text-xs tabular-nums text-neutral-400"
+                    >
+                      {formatElapsed(runElapsedMs)}
+                    </span>
+                    <button
+                      type="button"
+                      data-testid="cancel-button"
+                      onClick={() => void cancelRun()}
+                      disabled={restarting}
+                      className="rounded bg-red-800 px-2 py-1.5 font-medium text-white hover:bg-red-700 disabled:opacity-40"
+                    >
+                      Cancel
+                    </button>
+                  </>
                 )}
                 <button
                   type="button"
@@ -895,6 +1029,16 @@ export default function App() {
           </div>
         </aside>
       </div>
+
+      <ImportDatabaseDialog
+        open={importOpen}
+        databases={databases}
+        storageInfo={storageInfo}
+        onClose={() => setImportOpen(false)}
+        onImportDatabase={importDatabaseFile}
+        onImportScript={importScriptFile}
+        onImported={handleImported}
+      />
 
       <footer className="border-t border-neutral-800 px-4 py-2 text-[11px] text-neutral-500">
         Browser-only SQLite · no server · statement policy blocks ATTACH and VACUUM INTO · tab guard

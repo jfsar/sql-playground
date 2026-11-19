@@ -80,6 +80,22 @@ class FakeWorker {
         filename: req.filename,
         sizeBytes: 4096,
       };
+    } else if (req.type === "import-db") {
+      this.active = req.filename;
+      this.files.add(req.filename);
+      res = {
+        type: "imported",
+        requestId: req.requestId,
+        result: {
+          filename: req.filename,
+          sizeBytes: req.bytes.byteLength,
+          pageSize: 4096,
+          journalMode: "delete",
+          quickCheck: "ok",
+          trustedSchema: "off",
+          defensiveMode: true,
+        },
+      };
     } else if (req.type === "list-files") {
       res = { type: "files", requestId: req.requestId, files: [...this.files] };
     } else if (req.type === "delete-file") {
@@ -231,17 +247,25 @@ describe("WorkerManager", () => {
     manager.terminate();
   });
 
-  it("rejects in-flight requests on worker crash", async () => {
-    const { manager, worker } = makeManager();
+  it("rejects in-flight requests and auto-restarts after a worker crash", async () => {
+    const { manager, workers } = makeSeqManager();
     await manager.init();
-    worker.autoRespond = false;
+    workers[0]!.autoRespond = false;
 
     const p = manager.execute("SELECT 1");
     p.catch(() => undefined); // avoid unhandled rejection if crash races
-    await worker.waitFor(() => worker.posted.some((m) => m.type === "execute"));
-    worker.crash("unexpected");
+    await workers[0]!.waitFor(() => workers[0]!.posted.some((m) => m.type === "execute"));
+    workers[0]!.crash("unexpected");
 
-    await expect(p).rejects.toThrow(/unexpected|crashed/i);
+    await expect(p).rejects.toMatchObject({ code: "WORKER_CRASHED" });
+
+    // Plan §5.4: the manager starts a fresh worker without waiting for a retry.
+    await workers[1]!.waitFor(() => workers[1]!.posted.some((m) => m.type === "init"));
+    expect(workers[0]!.terminated).toBe(true);
+    expect(workers).toHaveLength(2);
+
+    const res = await manager.execute("SELECT 1");
+    expect(res.statements).toHaveLength(1);
     manager.terminate();
   });
 
@@ -291,6 +315,7 @@ describe("WorkerManager", () => {
 
   it("exportDb returns bytes and a file name", async () => {
     const { manager } = makeManager();
+    await manager.openFile("/db_seed.sqlite3");
     const exported = await manager.exportDb();
     expect(exported.name).toBe("playground.sqlite3");
     expect(exported.bytes.byteLength).toBeGreaterThan(0);
@@ -345,6 +370,88 @@ describe("WorkerManager", () => {
     expect(status.persistent).toBe(true);
     const res = await manager.execute("SELECT 1");
     expect(res.statements).toHaveLength(1);
+    manager.terminate();
+  });
+
+  it("cancels an in-flight request by id and reopens the active database", async () => {
+    const { manager, workers } = makeSeqManager();
+    await manager.openFile("/db_abc.sqlite3");
+    workers[0]!.autoRespond = false;
+
+    const p = manager.execute("SELECT 1", { requestId: "run-1" });
+    p.catch(() => undefined);
+    await workers[0]!.waitFor(() => workers[0]!.posted.some((m) => m.type === "execute"));
+    const request = workers[0]!.posted.find((m) => m.type === "execute");
+    expect(request?.requestId).toBe("run-1");
+
+    const cancelled = manager.cancel("run-1");
+    await expect(p).rejects.toMatchObject({ name: CANCELLED_ERROR_NAME });
+
+    await cancelled;
+    expect(workers[0]!.terminated).toBe(true);
+    expect(workers[1]!.posted.find((m) => m.type === "init")).toMatchObject({
+      openFile: "/db_abc.sqlite3",
+    });
+    expect(manager.activeFilename).toBe("/db_abc.sqlite3");
+
+    const res = await manager.execute("SELECT 1");
+    expect(res.statements).toHaveLength(1);
+    manager.terminate();
+  });
+
+  it("cancels a queued request before it is sent", async () => {
+    const { manager, worker } = makeManager();
+    await manager.init();
+    worker.autoRespond = false;
+
+    const first = manager.execute("SELECT 1");
+    first.catch(() => undefined);
+    const second = manager.execute("SELECT 2", { requestId: "queued-2" });
+    second.catch(() => undefined);
+    await worker.waitFor(() => worker.posted.filter((m) => m.type === "execute").length === 1);
+
+    await manager.cancel("queued-2");
+
+    const firstRequest = worker.posted.find((m) => m.type === "execute");
+    if (firstRequest) worker.respond(firstRequest);
+    await first;
+    await expect(second).rejects.toMatchObject({ name: CANCELLED_ERROR_NAME });
+
+    // The cancelled request never reached the worker and no restart was needed.
+    expect(worker.posted.filter((m) => m.type === "execute")).toHaveLength(1);
+    expect(worker.terminated).toBe(false);
+    manager.terminate();
+  });
+
+  it("ignores cancel for an unknown request id", async () => {
+    const { manager, workers } = makeSeqManager();
+    await manager.init();
+
+    await manager.cancel("never-existed");
+
+    expect(workers).toHaveLength(1);
+    expect(workers[0]!.terminated).toBe(false);
+    const res = await manager.execute("SELECT 1");
+    expect(res.statements).toHaveLength(1);
+    manager.terminate();
+  });
+
+  it("restart rejects queued work instead of running it on the new worker", async () => {
+    const { manager, workers } = makeSeqManager();
+    await manager.init();
+    workers[0]!.autoRespond = false;
+
+    const first = manager.execute("SELECT 1");
+    first.catch(() => undefined);
+    const second = manager.execute("SELECT 2");
+    second.catch(() => undefined);
+    await workers[0]!.waitFor(() => workers[0]!.posted.some((m) => m.type === "execute"));
+
+    await manager.restart();
+
+    await expect(first).rejects.toMatchObject({ name: CANCELLED_ERROR_NAME });
+    await expect(second).rejects.toMatchObject({ name: CANCELLED_ERROR_NAME });
+    expect(workers[1]!.posted.filter((m) => m.type === "execute")).toHaveLength(0);
     manager.terminate();
   });
 });
@@ -402,6 +509,53 @@ describe("WorkerManager multi-database", () => {
     const { manager } = makeManager();
     const files = await manager.listFiles();
     expect(files).toContain("/db_seed.sqlite3");
+    manager.terminate();
+  });
+
+  it("imports bytes into a new active pool file", async () => {
+    const { manager, worker } = makeManager();
+    const buffer = new Uint8Array([1, 2, 3, 4]).buffer;
+
+    const result = await manager.importDb("/db_imported.sqlite3", buffer);
+
+    expect(result).toMatchObject({
+      filename: "/db_imported.sqlite3",
+      sizeBytes: 4,
+      quickCheck: "ok",
+    });
+    expect(manager.activeFilename).toBe("/db_imported.sqlite3");
+    expect(worker.files.has("/db_imported.sqlite3")).toBe(true);
+    manager.terminate();
+  });
+
+  it("exports a named database file", async () => {
+    const { manager } = makeManager();
+    const exported = await manager.exportFile("/db_seed.sqlite3");
+    expect(exported.bytes.byteLength).toBeGreaterThan(0);
+    manager.terminate();
+  });
+
+  it("preserves the worker's DbError code on failure", async () => {
+    const { manager, worker } = makeManager();
+    await manager.init();
+    worker.autoRespond = false;
+
+    const pending = manager.importDb("/db_bad.sqlite3", new ArrayBuffer(8));
+    pending.catch(() => undefined);
+    await worker.waitFor(() => worker.posted.some((m) => m.type === "import-db"));
+    const request = worker.posted.find((m) => m.type === "import-db");
+    worker.onmessage?.({
+      data: {
+        type: "failed",
+        requestId: request?.requestId,
+        error: { code: "CORRUPT_FILE", message: "quick_check failed" },
+      },
+    } as MessageEvent<unknown>);
+
+    await expect(pending).rejects.toMatchObject({
+      code: "CORRUPT_FILE",
+      message: "quick_check failed",
+    });
     manager.terminate();
   });
 });

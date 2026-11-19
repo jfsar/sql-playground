@@ -15,11 +15,15 @@ import {
   type DatabaseSchema,
   type ExecutionResponse,
   type QueryPlan,
+  type ScriptImportResult,
+  type SqliteImportResult,
   type TablePage,
   type WorkerStatus,
 } from "../../shared/contracts";
 import { DbOperationError } from "../../shared/errors";
+import { assessImportQuota, inspectImportFile, readSqlText } from "./importValidation";
 import { dbFileName } from "../storage/reconcile";
+import type { StorageInfo } from "../storage/quota";
 import type { StorageService } from "../storage/storageService";
 import { SAMPLE_DATABASE_NAME, SAMPLE_SCHEMA_SQL } from "./sampleDatabase";
 
@@ -29,10 +33,46 @@ export const DEFAULT_DATABASE_NAME = "My database";
 export interface DatabaseBackend {
   init(): Promise<WorkerStatus>;
   status(): Promise<WorkerStatus>;
-  execute(sql: string, opts?: { maxRows?: number }): Promise<ExecutionResponse>;
+  execute(sql: string, opts?: { maxRows?: number; requestId?: string }): Promise<ExecutionResponse>;
+  cancel(requestId: string): Promise<void>;
   explain(sql: string): Promise<QueryPlan>;
   getSchema(): Promise<DatabaseSchema>;
   browseTable(table: string, page: { limit: number; offset: number }): Promise<TablePage>;
+  importDb(filename: string, bytes: ArrayBuffer): Promise<SqliteImportResult>;
+  exportFile(filename: string): Promise<{ bytes: Uint8Array; name: string }>;
+  openFile(filename: string): Promise<number>;
+  deleteFile(filename: string): Promise<{ existed: boolean }>;
+}
+
+export interface ImportDatabaseOptions {
+  name?: string;
+  storageInfo?: StorageInfo;
+  now?: number;
+}
+
+export interface ImportScriptOptions {
+  targetId?: string;
+  name?: string;
+}
+
+function databaseNameFromFile(fileName: string): string {
+  const base = fileName
+    .replace(/\.[^.]+$/, "")
+    .replace(/[_-]+/g, " ")
+    .trim();
+  return base.length > 0 ? base : "Imported database";
+}
+
+async function restoreActiveDatabase(
+  backend: DatabaseBackend,
+  filename: string | null,
+): Promise<void> {
+  if (!filename) return;
+  try {
+    await backend.openFile(filename);
+  } catch {
+    // Startup reconciliation/schema refresh will surface the failure.
+  }
 }
 
 export interface StartupResult {
@@ -165,8 +205,152 @@ export class DatabaseService {
     }
   }
 
-  execute(sql: string, opts?: { maxRows?: number }): Promise<ExecutionResponse> {
+  execute(
+    sql: string,
+    opts?: { maxRows?: number; requestId?: string },
+  ): Promise<ExecutionResponse> {
     return this.backend.execute(sql, opts);
+  }
+
+  /** Per-request cancellation (plan §5.3, ADR-004). */
+  cancel(requestId: string): Promise<void> {
+    return this.backend.cancel(requestId);
+  }
+
+  /** Validate, stage, quick-check, then register a new imported database. */
+  async importDatabase(file: File, opts: ImportDatabaseOptions = {}): Promise<DatabaseInfo> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const report = inspectImportFile(file.name, bytes);
+    if (!report.ok) {
+      const error = report.error;
+      throw new DbOperationError(
+        error?.code ?? "CORRUPT_FILE",
+        error?.message ?? "The selected file could not be validated.",
+      );
+    }
+    if (report.kind !== "sqlite") {
+      throw new DbOperationError(
+        "UNSUPPORTED_FILE",
+        "This is a SQL script. Choose a SQLite database file or use the script import option.",
+      );
+    }
+
+    const quota = opts.storageInfo ? assessImportQuota(report.sizeBytes, opts.storageInfo) : null;
+    if (quota && !quota.ok) {
+      throw new DbOperationError("QUOTA", quota.message ?? undefined);
+    }
+
+    const previous = this.storage.activeFile;
+    const id = crypto.randomUUID();
+    const filename = dbFileName(id);
+    const now = opts.now ?? Date.now();
+
+    try {
+      const result = await this.backend.importDb(filename, bytes.buffer as ArrayBuffer);
+      const info: DatabaseInfo = {
+        id,
+        name: opts.name?.trim() || databaseNameFromFile(file.name),
+        createdAt: now,
+        lastOpenedAt: now,
+        sizeBytes: result.sizeBytes,
+        status: "ok",
+      };
+      await this.storage.registerImportedDatabase(info);
+      return info;
+    } catch (err) {
+      try {
+        await this.backend.deleteFile(filename);
+      } catch {
+        // The next reconciliation adopts or ignores the orphan file.
+      }
+      await restoreActiveDatabase(this.backend, previous);
+      throw err;
+    }
+  }
+
+  /** Import a `.sql` script into a new or existing database (plan §5.5). */
+  async importScript(file: File, opts: ImportScriptOptions = {}): Promise<ScriptImportResult> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const report = inspectImportFile(file.name, bytes);
+    if (!report.ok) {
+      const error = report.error;
+      throw new DbOperationError(
+        error?.code ?? "UNSUPPORTED_FILE",
+        error?.message ?? "The selected script could not be validated.",
+      );
+    }
+    if (report.kind !== "sql") {
+      throw new DbOperationError(
+        "UNSUPPORTED_FILE",
+        "This is a SQLite database file, not a SQL script.",
+      );
+    }
+
+    const sql = readSqlText(bytes);
+    if (sql === null) {
+      throw new DbOperationError("UNSUPPORTED_FILE", "The script is not valid UTF-8 text.");
+    }
+
+    if (opts.targetId) {
+      const target = await this.storage.openDatabase(opts.targetId);
+      const response = await this.backend.execute(sql);
+      const refreshed = await this.refreshDatabaseSize(target.id).catch(() => target);
+      return { response, database: refreshed, rolledBack: false };
+    }
+
+    const previous = this.storage.activeFile;
+    const info = await this.storage.createDatabase(
+      opts.name?.trim() || databaseNameFromFile(file.name),
+    );
+    let response: ExecutionResponse;
+    try {
+      response = await this.backend.execute(sql);
+    } catch (err) {
+      try {
+        await this.storage.deleteDatabase(info.id);
+      } catch {
+        // Reconciliation cleans up a file that could not be removed here.
+      }
+      await restoreActiveDatabase(this.backend, previous);
+      throw err;
+    }
+    const failed = response.statements.some((statement) => statement.kind === "error");
+
+    if (failed) {
+      let rolledBack: boolean;
+      try {
+        await this.storage.deleteDatabase(info.id);
+        rolledBack = true;
+      } catch {
+        rolledBack = false;
+      }
+      await restoreActiveDatabase(this.backend, previous);
+      return { response, database: rolledBack ? null : info, rolledBack };
+    }
+
+    const refreshed = await this.refreshDatabaseSize(info.id).catch(() => info);
+    return { response, database: refreshed, rolledBack: false };
+  }
+
+  /** Export one database file as a blob (plan §5.3). */
+  async exportDatabase(id: string): Promise<Blob> {
+    const entries = await this.storage.listDatabases();
+    if (!entries.some((entry) => entry.id === id)) {
+      throw new DbOperationError(
+        "STORAGE_UNAVAILABLE",
+        "Database not found; it may have been removed.",
+      );
+    }
+    const { bytes } = await this.backend.exportFile(dbFileName(id));
+    const buffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ) as ArrayBuffer;
+    return new Blob([buffer], { type: "application/vnd.sqlite3" });
+  }
+
+  private async refreshDatabaseSize(id: string): Promise<DatabaseInfo> {
+    return this.storage.openDatabase(id);
   }
 
   explain(sql: string): Promise<QueryPlan> {

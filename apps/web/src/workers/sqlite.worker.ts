@@ -8,13 +8,25 @@ import { readSchema } from "../services/database/schema";
 import type { WorkerRequest, WorkerResponse } from "../services/worker/protocol";
 import { createPlanToolkit } from "../services/toolkit";
 import type { PlanToolkit } from "../services/toolkit/planToolkit";
-import type { WorkerStatus } from "../shared/contracts";
+import type { SqliteImportResult, WorkerStatus } from "../shared/contracts";
+import { DbOperationError, type DbErrorCode } from "../shared/errors";
 
 const VFS_NAME = "sql-playground";
 /** Pool must hold N databases + journals; grows deliberately on demand (ADR-001). */
 const INITIAL_CAPACITY = 12;
 /** Slots added when a new file is created and the pool is full. */
 const CAPACITY_GROWTH = 8;
+/**
+ * A worker terminated mid-`sqlite3_step` can keep its OPFS sync access handles
+ * for a short time. The fresh worker retries these transient lock errors before
+ * falling back to in-memory (total wait ≈ 2.8 s, well inside the 5 s cancel
+ * target). Permanent failures (no OPFS API) still fail immediately.
+ */
+const OPFS_RETRY_DELAYS_MS = [50, 100, 200, 400, 800, 1200];
+
+type PoolOptions = Parameters<Sqlite3Static["installOpfsSAHPoolVfs"]>[0] & {
+  forceReinitIfPreviouslyFailed?: boolean;
+};
 
 let sqlite3: Sqlite3Static | null = null;
 let db: Database | null = null;
@@ -25,17 +37,65 @@ let activeFilename: string | null = null;
 let toolkit: PlanToolkit | null = null;
 let toolkitImpl: "rust" | "typescript" = "typescript";
 
-function post(msg: WorkerResponse): void {
-  (globalThis as unknown as Worker).postMessage(msg);
+function post(msg: WorkerResponse, transfer?: Transferable[]): void {
+  (globalThis as unknown as Worker).postMessage(msg, transfer ?? []);
 }
 
-function fail(requestId: string, err: unknown, code = "WORKER_CRASHED"): void {
+function fail(requestId: string, err: unknown, code: DbErrorCode = "WORKER_CRASHED"): void {
   const message = err instanceof Error ? err.message : String(err);
+  const resolved = err instanceof DbOperationError ? err.code : code;
   post({
     type: "failed",
     requestId,
-    error: { code, message },
+    error: { code: resolved, message },
   });
+}
+
+function execScalar(target: Database, sql: string): unknown {
+  const rows = target.exec(sql, {
+    rowMode: "array",
+    returnValue: "resultRows",
+  }) as unknown;
+  return Array.isArray(rows) && Array.isArray(rows[0]) ? rows[0][0] : rows;
+}
+
+function applyHardenedPragmas(target: Database): {
+  trustedSchema: SqliteImportResult["trustedSchema"];
+  defensiveMode: boolean;
+} {
+  let trustedSchema: SqliteImportResult["trustedSchema"];
+  try {
+    target.exec("PRAGMA trusted_schema=OFF");
+    try {
+      execScalar(target, "SELECT count(*) FROM sqlite_master");
+      trustedSchema = "off";
+    } catch {
+      target.exec("PRAGMA trusted_schema=ON");
+      trustedSchema = "blocked";
+    }
+  } catch {
+    trustedSchema = "unsupported";
+  }
+
+  let defensiveMode: boolean;
+  try {
+    target.exec("PRAGMA defensive=ON");
+    defensiveMode = Number(execScalar(target, "PRAGMA defensive")) === 1;
+  } catch {
+    defensiveMode = false;
+  }
+
+  return { trustedSchema, defensiveMode };
+}
+
+function importErrorCode(err: unknown): DbErrorCode {
+  if (err instanceof DbOperationError) return err.code;
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (message.includes("not a database") || message.includes("corrupt")) return "CORRUPT_FILE";
+  if (message.includes("no available") || message.includes("full") || message.includes("quota")) {
+    return "QUOTA";
+  }
+  return "IO";
 }
 
 /** Live journal mode (ADR-001 PoC check: WAL support under opfs-sahpool). */
@@ -94,6 +154,40 @@ function closeActiveDb(): void {
   }
 }
 
+function isTransientOpfsError(err: unknown): boolean {
+  const name = err instanceof Error ? err.name : "";
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    name === "NoModificationAllowedError" ||
+    message.includes("access handle") ||
+    message.includes("modifications are not allowed") ||
+    message.includes("createaccesshandle")
+  );
+}
+
+async function installPool(): Promise<SAHPoolUtil> {
+  if (!sqlite3) throw new Error("SQLite is not initialized");
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= OPFS_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await sqlite3.installOpfsSAHPoolVfs({
+        name: VFS_NAME,
+        initialCapacity: INITIAL_CAPACITY,
+        preserveOnInitFailure: true,
+        // The runtime supports this (SQLite 3.54) even though the public type
+        // omits it; it clears the cached rejected install between retries.
+        forceReinitIfPreviouslyFailed: true,
+      } as PoolOptions);
+    } catch (err) {
+      lastError = err;
+      const hasRetry = attempt < OPFS_RETRY_DELAYS_MS.length;
+      if (!hasRetry || !isTransientOpfsError(err)) throw err;
+      await new Promise((resolve) => setTimeout(resolve, OPFS_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+  throw lastError;
+}
+
 /**
  * Close any open connection and open `filename`, creating it if missing
  * (oo1 default flags are `c`). Returns the file's size in bytes.
@@ -118,6 +212,7 @@ async function openDatabaseFile(filename: string): Promise<number> {
   }
 
   activeFilename = filename;
+  applyHardenedPragmas(db);
   return readSizeBytes(db);
 }
 
@@ -125,10 +220,7 @@ async function init(requestId: string, openFile?: string): Promise<void> {
   if (!sqlite3) {
     sqlite3 = await sqlite3InitModule();
     try {
-      poolUtil = await sqlite3.installOpfsSAHPoolVfs({
-        name: VFS_NAME,
-        initialCapacity: INITIAL_CAPACITY,
-      });
+      poolUtil = await installPool();
       persistent = true;
     } catch (opfsErr) {
       // Never silently fall back: UI must show "not persistent" (plan §2).
@@ -225,6 +317,68 @@ function handleBrowseTable(req: Extract<WorkerRequest, { type: "browse-table" }>
   }
 }
 
+async function handleImportDb(req: Extract<WorkerRequest, { type: "import-db" }>): Promise<void> {
+  if (!sqlite3 || !poolUtil) {
+    fail(
+      req.requestId,
+      new Error("Import requires persistent browser storage, which is unavailable."),
+      "STORAGE_UNAVAILABLE",
+    );
+    return;
+  }
+
+  if (poolUtil.getFileNames().includes(req.filename)) {
+    fail(
+      req.requestId,
+      new Error("That database file already exists; imports never overwrite."),
+      "IO",
+    );
+    return;
+  }
+
+  closeActiveDb();
+  activeFilename = null;
+
+  try {
+    if (poolUtil.getFileCount() >= poolUtil.getCapacity()) {
+      await poolUtil.addCapacity(CAPACITY_GROWTH);
+    }
+
+    const sizeBytes = await poolUtil.importDb(req.filename, new Uint8Array(req.bytes));
+    db = new poolUtil.OpfsSAHPoolDb(req.filename);
+    activeFilename = req.filename;
+
+    const quickCheck = String(execScalar(db, "PRAGMA quick_check"));
+    if (quickCheck.toLowerCase() !== "ok") {
+      throw new DbOperationError("CORRUPT_FILE", `SQLite quick_check failed: ${quickCheck}`);
+    }
+
+    const hardened = applyHardenedPragmas(db);
+    const pageSize = Number(execScalar(db, "PRAGMA page_size"));
+    const result: SqliteImportResult = {
+      filename: req.filename,
+      sizeBytes,
+      pageSize,
+      journalMode: readJournalMode(db),
+      quickCheck,
+      trustedSchema: hardened.trustedSchema,
+      defensiveMode: hardened.defensiveMode,
+    };
+    post({ type: "imported", requestId: req.requestId, result });
+  } catch (err) {
+    closeActiveDb();
+    activeFilename = null;
+    try {
+      if (poolUtil.getFileNames().includes(req.filename)) {
+        poolUtil.unlink(req.filename);
+      }
+    } catch {
+      // ignore cleanup failure so the original error surfaces
+    }
+    fail(req.requestId, err, importErrorCode(err));
+  }
+}
+
 async function handleOpenDb(req: Extract<WorkerRequest, { type: "open-db" }>): Promise<void> {
   try {
     const sizeBytes = await openDatabaseFile(req.filename);
@@ -272,13 +426,21 @@ function handleExport(req: Extract<WorkerRequest, { type: "export" }>): void {
     return;
   }
   try {
-    const bytes = poolUtil.exportFile(filename);
-    post({
-      type: "exported",
-      requestId: req.requestId,
-      bytes,
-      name: filename.replace(/^\//, ""),
-    });
+    let bytes = poolUtil.exportFile(filename);
+    if (bytes.byteLength === 0 && db && activeFilename === filename) {
+      db.exec("VACUUM");
+      bytes = poolUtil.exportFile(filename);
+    }
+    const transfer: Transferable[] = bytes.buffer instanceof ArrayBuffer ? [bytes.buffer] : [];
+    post(
+      {
+        type: "exported",
+        requestId: req.requestId,
+        bytes,
+        name: filename.replace(/^\//, ""),
+      },
+      transfer,
+    );
   } catch (err) {
     fail(req.requestId, err, "IO");
   }
@@ -306,6 +468,10 @@ globalThis.onmessage = (event: MessageEvent<WorkerRequest>) => {
   }
   if (req.type === "open-db") {
     void handleOpenDb(req);
+    return;
+  }
+  if (req.type === "import-db") {
+    void handleImportDb(req);
     return;
   }
   if (req.type === "schema") {

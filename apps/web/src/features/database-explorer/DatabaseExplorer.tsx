@@ -13,6 +13,7 @@ interface DatabaseExplorerProps {
   onOpen: (id: string) => void;
   onCreate: (name: string) => void;
   onCreateSample: () => void;
+  onImport: () => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onRequestPersistence: () => void;
@@ -91,6 +92,7 @@ export function DatabaseExplorer({
   onOpen,
   onCreate,
   onCreateSample,
+  onImport,
   onRename,
   onDelete,
   onRequestPersistence,
@@ -118,6 +120,20 @@ export function DatabaseExplorer({
       <div className="flex items-center justify-between border-b border-neutral-800 px-3 py-2">
         <span className="text-xs font-medium text-neutral-400">Databases</span>
         <span className="flex items-center gap-1">
+          <button
+            type="button"
+            data-testid="import-database"
+            onClick={onImport}
+            disabled={busy || !storageInfo?.opfsSupported}
+            title={
+              storageInfo?.opfsSupported
+                ? "Import a SQLite database or SQL script"
+                : "Import requires persistent browser storage"
+            }
+            className="rounded bg-neutral-800 px-2 py-1 text-[11px] font-medium text-neutral-200 hover:bg-neutral-700 disabled:opacity-40"
+          >
+            Import
+          </button>
           <button
             type="button"
             data-testid="create-sample-database"

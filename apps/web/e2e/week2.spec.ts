@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
 /**
@@ -122,17 +123,22 @@ INSERT INTO export_t (x) VALUES (1);`);
   await page.getByTestId("run-button").click();
   await expect(page.getByTestId("stmt-change-1")).toBeVisible({ timeout: 15_000 });
 
+  const downloadPromise = page.waitForEvent("download");
   await page.getByTestId("export-button").click();
   await expect(page.getByTestId("export-result")).toBeVisible({ timeout: 15_000 });
+  const download = await downloadPromise;
 
   const persistence = await page.getByTestId("persistence").textContent();
   const exportText = await page.getByTestId("export-result").textContent();
   test.info().annotations.push({ type: "export", description: exportText ?? "" });
 
   if (persistence?.includes("OPFS")) {
-    expect(exportText).toContain("header OK");
-    const size = Number.parseInt((exportText.match(/(\d+) bytes/) ?? [])[1] ?? "0", 10);
-    expect(size).toBeGreaterThan(0);
+    const path = await download.path();
+    if (!path) throw new Error("export download has no path");
+    const bytes = await readFile(path);
+    expect(bytes.subarray(0, 16).toString("utf8")).toBe("SQLite format 3\0");
+    expect(bytes.byteLength).toBeGreaterThan(0);
+    expect(exportText).toContain(`${bytes.byteLength} bytes`);
   } else {
     expect(exportText).toMatch(/not persistent|unavailable/i);
   }

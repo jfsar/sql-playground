@@ -240,3 +240,24 @@ describe("StorageService.reconcile", () => {
     expect(report.missingIds).toEqual([]);
   });
 });
+
+describe("StorageService imported databases", () => {
+  it("registers metadata only when the staged file exists", async () => {
+    const { service, worker, store } = makeService();
+    const info: DatabaseInfo = {
+      id: "imported-id",
+      name: "Imported",
+      createdAt: 10,
+      lastOpenedAt: 10,
+      sizeBytes: 4096,
+      status: "ok",
+    };
+    await expect(service.registerImportedDatabase(info)).rejects.toMatchObject({
+      code: "STORAGE_UNAVAILABLE",
+    });
+
+    worker.files.add(dbFileName(info.id));
+    await service.registerImportedDatabase(info);
+    expect(store.rows.get(info.id)).toEqual(info);
+  });
+});
