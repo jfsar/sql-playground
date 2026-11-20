@@ -55,7 +55,7 @@ export function PlanPanel({ plan }: { plan: QueryPlan }) {
         Query plan · {plan.nodes.length} node{plan.nodes.length === 1 ? "" : "s"} · SQLite{" "}
         {plan.sqliteVersion}
       </div>
-      <p className="mt-1 text-xs text-neutral-500" data-testid="plan-neutral-note">
+      <p className="mt-1 text-xs text-neutral-400" data-testid="plan-neutral-note">
         Descriptions are neutral: a scan is not automatically a problem, and an index search is not
         automatically optimal.
       </p>
@@ -75,7 +75,7 @@ export function PlanPanel({ plan }: { plan: QueryPlan }) {
       )}
       <details className="mt-3" data-testid="plan-raw">
         <summary className="cursor-pointer text-xs text-neutral-400">Raw SQLite output</summary>
-        <pre data-testid="plan-raw-output" className="mt-1 overflow-x-auto text-neutral-500">
+        <pre data-testid="plan-raw-output" className="mt-1 overflow-x-auto text-neutral-400">
           {plan.raw.map((r) => `${r.id}|${r.parent}|${r.detail}`).join("\n")}
         </pre>
       </details>

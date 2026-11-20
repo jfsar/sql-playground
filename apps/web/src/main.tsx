@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./app/App";
+import { EnvironmentGate } from "./app/EnvironmentGate";
 import { ErrorBoundary } from "./app/ErrorBoundary";
 import "./index.css";
 
@@ -11,8 +12,10 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
+    <EnvironmentGate>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    </EnvironmentGate>
   </StrictMode>,
 );

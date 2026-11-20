@@ -86,7 +86,7 @@ function TableDetails({
             <li key={column.name} className="flex flex-wrap items-baseline gap-1">
               <span className="font-mono text-neutral-200">{column.name}</span>
               {column.declaredType ? (
-                <span className="text-neutral-500">{column.declaredType}</span>
+                <span className="text-neutral-400">{column.declaredType}</span>
               ) : null}
               {columnBadges(table, column.name).map((badge) => (
                 <span
@@ -105,7 +105,7 @@ function TableDetails({
         <div>
           <div className="mb-1 font-medium text-neutral-400">Constraints</div>
           {constraints.length === 0 ? (
-            <div className="text-neutral-600">none</div>
+            <div className="text-neutral-400">none</div>
           ) : (
             <ul className="space-y-0.5 text-amber-200/90">
               {constraints.map((constraint) => (
@@ -122,13 +122,13 @@ function TableDetails({
         <div>
           <div className="mb-1 font-medium text-neutral-400">Indexes</div>
           {table.indexes.length === 0 ? (
-            <div className="text-neutral-600">none</div>
+            <div className="text-neutral-400">none</div>
           ) : (
             <ul className="space-y-0.5 text-emerald-200/90">
               {table.indexes.map((index) => (
                 <li key={index.name} className="font-mono">
                   {index.name}
-                  <span className="ml-1 font-sans text-neutral-500">
+                  <span className="ml-1 font-sans text-neutral-400">
                     ({index.columns.join(", ")})
                   </span>
                   {index.unique ? (
@@ -173,11 +173,11 @@ function SchemaGroup({
 }) {
   return (
     <div data-testid={testId}>
-      <div className="px-1 py-1 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
+      <div className="px-1 py-1 text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
         {title} · {items.length}
       </div>
       {items.length === 0 ? (
-        <div className="px-1 pb-1 text-[11px] text-neutral-600">none</div>
+        <div className="px-1 pb-1 text-[11px] text-neutral-400">none</div>
       ) : (
         <ul className="space-y-0.5">
           {items.map((item) => {
@@ -191,11 +191,11 @@ function SchemaGroup({
                   onClick={() => onToggle(item.name)}
                   className="flex w-full items-center gap-1 rounded px-1 py-1 text-left text-xs text-neutral-200 hover:bg-neutral-900"
                 >
-                  <span className="w-3 text-neutral-500" aria-hidden="true">
+                  <span className="w-3 text-neutral-400" aria-hidden="true">
                     {isOpen ? "▾" : "▸"}
                   </span>
                   <span className="min-w-0 flex-1 truncate font-mono">{item.name}</span>
-                  <span className="text-[10px] text-neutral-600">
+                  <span className="text-[10px] text-neutral-400">
                     {item.columns.length} col{item.columns.length === 1 ? "" : "s"}
                   </span>
                 </button>
@@ -236,7 +236,7 @@ export function SchemaExplorer({
         <span className="text-xs font-medium text-neutral-400">
           Schema
           {activeDatabase ? (
-            <span className="ml-1 font-normal text-neutral-500">· {activeDatabase.name}</span>
+            <span className="ml-1 font-normal text-neutral-400">· {activeDatabase.name}</span>
           ) : null}
         </span>
         <button
@@ -253,6 +253,7 @@ export function SchemaExplorer({
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {error ? (
           <div
+            role="alert"
             data-testid="schema-error"
             className="mb-2 rounded border border-red-800 bg-red-950/40 p-2 text-[11px] text-red-300"
           >
@@ -260,13 +261,13 @@ export function SchemaExplorer({
           </div>
         ) : null}
         {!activeDatabase ? (
-          <p className="p-1 text-xs text-neutral-500">Open a database to inspect its schema.</p>
+          <p className="p-1 text-xs text-neutral-400">Open a database to inspect its schema.</p>
         ) : busy && !schema ? (
-          <p className="p-1 text-xs text-neutral-500" data-testid="schema-loading">
+          <p role="status" className="p-1 text-xs text-neutral-400" data-testid="schema-loading">
             Reading schema…
           </p>
         ) : !schema ? (
-          <p className="p-1 text-xs text-neutral-500">Schema unavailable.</p>
+          <p className="p-1 text-xs text-neutral-400">Schema unavailable.</p>
         ) : (
           <>
             <SchemaGroup
@@ -290,7 +291,7 @@ export function SchemaExplorer({
 
             {activeDatabase.sample ? (
               <div className="mt-3 border-t border-neutral-800 pt-2" data-testid="demo-queries">
-                <div className="px-1 py-1 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
+                <div className="px-1 py-1 text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
                   Demo queries
                 </div>
                 <ul className="space-y-1">

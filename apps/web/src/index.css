@@ -1,1 +1,22 @@
 @import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+/* NFR-11: every keyboard-focusable control gets a visible, high-contrast ring.
+   Utilities that set their own focus style (the results grid) override this. */
+:where(a, button, input, select, textarea, summary, [role="tab"]):focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+
+.cm-content:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: -2px;
+}
+
+/* Anchor targets (the skip link) should not add a focus ring to whole panels. */
+main:focus:not(:focus-visible) {
+  outline: none;
+}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { TabBlockedScreen } from "./TabBlockedScreen";
 import { DatabaseExplorer } from "../features/database-explorer/DatabaseExplorer";
 import { SchemaExplorer } from "../features/database-explorer/SchemaExplorer";
@@ -150,6 +150,8 @@ export default function App() {
   const managerRef = useRef<WorkerManager | null>(null);
   const databaseRef = useRef<DatabaseService | null>(null);
   const historyRef = useRef<QueryHistoryService | null>(null);
+  const analysisTabRef = useRef<HTMLButtonElement>(null);
+  const historyTabRef = useRef<HTMLButtonElement>(null);
   const [tabLock, setTabLock] = useState<TabLockState>("pending");
   const [lockUnsupported, setLockUnsupported] = useState(false);
   const [status, setStatus] = useState<WorkerStatus | null>(null);
@@ -707,6 +709,32 @@ export default function App() {
     setBrowse((current) => (current ? { ...current, offset: Math.max(0, offset) } : current));
   }, []);
 
+  // ARIA tab pattern: Left/Right cycle the two side-panel tabs, Home/End jump.
+  const handleSideTabKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLButtonElement>) => {
+      if (
+        event.key !== "ArrowLeft" &&
+        event.key !== "ArrowRight" &&
+        event.key !== "Home" &&
+        event.key !== "End"
+      ) {
+        return;
+      }
+      event.preventDefault();
+      const next: RightTab =
+        event.key === "Home"
+          ? "analysis"
+          : event.key === "End"
+            ? "history"
+            : rightTab === "analysis"
+              ? "history"
+              : "analysis";
+      setRightTab(next);
+      (next === "analysis" ? analysisTabRef : historyTabRef).current?.focus();
+    },
+    [rightTab],
+  );
+
   if (tabLock === "blocked") {
     return <TabBlockedScreen onRetry={() => void retryLock()} />;
   }
@@ -715,12 +743,23 @@ export default function App() {
   const hasSelection = selection !== null && selection.text.trim() !== "";
 
   return (
-    <div className="flex h-screen flex-col bg-neutral-950 text-neutral-100">
+    <div className="flex h-full flex-col bg-neutral-950 text-neutral-100">
+      <a
+        href="#workspace-main"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-sky-800 focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-white"
+      >
+        Skip to SQL workspace
+      </a>
       <header className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
         <h1 className="text-base font-semibold tracking-tight">SQL Playground</h1>
-        <div className="flex items-center gap-3 text-xs" data-testid="status-bar">
+        <div
+          className="flex items-center gap-3 text-xs"
+          data-testid="status-bar"
+          aria-label="Application status"
+          aria-live="polite"
+        >
           {tabLock === "pending" ? (
-            <span data-testid="lock-pending" className="text-neutral-500">
+            <span data-testid="lock-pending" className="text-neutral-400">
               acquiring tab lock…
             </span>
           ) : initError ? (
@@ -748,7 +787,7 @@ export default function App() {
                 journal: {status.journalMode}
               </span>
               {status.persistent && status.poolCapacity !== null ? (
-                <span className="text-neutral-500" data-testid="pool">
+                <span className="text-neutral-400" data-testid="pool">
                   pool {status.poolFileCount}/{status.poolCapacity}
                 </span>
               ) : null}
@@ -764,7 +803,7 @@ export default function App() {
               )}
             </>
           ) : (
-            <span data-testid="loading" className="text-neutral-500">
+            <span data-testid="loading" className="text-neutral-400">
               initializing SQLite…
             </span>
           )}
@@ -773,7 +812,10 @@ export default function App() {
 
       <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)_320px] overflow-hidden">
         {/* Explorer sidebar (plan §5.1) */}
-        <aside className="flex min-h-0 flex-col border-r border-neutral-800">
+        <aside
+          aria-label="Databases and schema"
+          className="flex min-h-0 flex-col border-r border-neutral-800"
+        >
           <BackupReminder
             status={backupStatus}
             onExport={() => void exportActiveDatabase()}
@@ -807,17 +849,22 @@ export default function App() {
         </aside>
 
         {/* Center: editor over results */}
-        <div className="grid min-h-0 grid-rows-2">
+        <main
+          id="workspace-main"
+          tabIndex={-1}
+          aria-label="SQL workspace"
+          className="grid min-h-0 grid-rows-2 focus:outline-none"
+        >
           <section className="flex min-h-0 flex-col border-b border-neutral-800">
             <div className="flex items-center justify-between border-b border-neutral-800 px-3 py-2 text-xs text-neutral-400">
               <span>
                 SQL editor
                 {activeDatabase ? (
-                  <span className="ml-2 text-neutral-500">
+                  <span className="ml-2 text-neutral-400">
                     · <span className="text-neutral-300">{activeDatabase.name}</span>
                   </span>
                 ) : null}
-                <span className="ml-2 text-neutral-600">
+                <span className="ml-2 text-neutral-400">
                   ⌘/Ctrl+Enter run · ⇧⌘/Ctrl+Enter explain
                 </span>
               </span>
@@ -874,7 +921,7 @@ export default function App() {
                   data-testid="run-button"
                   onClick={() => void run()}
                   disabled={running || !status}
-                  className="rounded bg-sky-700 px-3 py-1.5 font-medium text-white hover:bg-sky-600 disabled:opacity-40"
+                  className="rounded bg-sky-800 px-3 py-1.5 font-medium text-white hover:bg-sky-700 disabled:opacity-40"
                 >
                   {running ? "Running…" : hasSelection ? "Run selection (⌘↵)" : "Run (⌘↵)"}
                 </button>
@@ -894,12 +941,11 @@ export default function App() {
 
           <section className="flex min-h-0 flex-col overflow-hidden">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-800 px-3 py-2 text-xs text-neutral-400">
-              <div className="flex items-center gap-1" role="tablist" aria-label="Results view">
+              <div className="flex items-center gap-1" role="group" aria-label="Results view">
                 <button
                   type="button"
-                  role="tab"
                   data-testid="results-tab"
-                  aria-selected={browse === null}
+                  aria-pressed={browse === null}
                   onClick={closeTable}
                   className={`rounded px-2 py-1 font-medium ${
                     browse === null
@@ -910,15 +956,13 @@ export default function App() {
                   Results
                 </button>
                 {browse ? (
-                  <button
-                    type="button"
-                    role="tab"
+                  <span
                     data-testid="table-tab"
-                    aria-selected="true"
+                    aria-current="page"
                     className="rounded bg-neutral-800 px-2 py-1 font-medium text-neutral-100"
                   >
                     Table: {browse.table}
-                  </button>
+                  </span>
                 ) : null}
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -933,7 +977,7 @@ export default function App() {
                   </span>
                 )}
                 {response && (
-                  <span className="text-neutral-500">
+                  <span className="text-neutral-400">
                     {response.statements.length} statement
                     {response.statements.length === 1 ? "" : "s"} ·{" "}
                     {response.totalEngineMs.toFixed(2)} ms total
@@ -968,7 +1012,7 @@ export default function App() {
                   </span>
                 )}
                 {exportInfo && (
-                  <span className="text-neutral-500" data-testid="export-result">
+                  <span className="text-neutral-400" data-testid="export-result">
                     {exportInfo}
                   </span>
                 )}
@@ -990,6 +1034,7 @@ export default function App() {
               >
                 {runError && (
                   <div
+                    role="alert"
                     className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
                     data-testid="run-error"
                   >
@@ -997,7 +1042,7 @@ export default function App() {
                   </div>
                 )}
                 {!runError && !response && (
-                  <p className="text-sm text-neutral-500">
+                  <p className="text-sm text-neutral-400">
                     Run SQL to see per-statement results, timing, and transaction state. Explain
                     parses the query plan in the worker (Rust wasm or TS fallback). Databases
                     persist in OPFS across reloads when available.
@@ -1013,17 +1058,25 @@ export default function App() {
               </div>
             )}
           </section>
-        </div>
+        </main>
 
         {/* Analysis / history panel */}
-        <aside className="flex min-h-0 flex-col gap-3 border-l border-neutral-800 p-3">
+        <aside
+          aria-label="Analysis and history"
+          className="flex min-h-0 flex-col gap-3 border-l border-neutral-800 p-3"
+        >
           <div className="flex items-center gap-1" role="tablist" aria-label="Side panel">
             <button
+              ref={analysisTabRef}
               type="button"
               role="tab"
+              id="analysis-tab"
               data-testid="analysis-tab"
               aria-selected={rightTab === "analysis"}
+              aria-controls="side-panel"
+              tabIndex={rightTab === "analysis" ? 0 : -1}
               onClick={() => setRightTab("analysis")}
+              onKeyDown={handleSideTabKeyDown}
               className={`rounded px-2 py-1 text-xs font-medium ${
                 rightTab === "analysis"
                   ? "bg-neutral-800 text-neutral-100"
@@ -1033,11 +1086,16 @@ export default function App() {
               Analysis
             </button>
             <button
+              ref={historyTabRef}
               type="button"
               role="tab"
+              id="history-tab"
               data-testid="history-tab"
               aria-selected={rightTab === "history"}
+              aria-controls="side-panel"
+              tabIndex={rightTab === "history" ? 0 : -1}
               onClick={() => setRightTab("history")}
+              onKeyDown={handleSideTabKeyDown}
               className={`rounded px-2 py-1 text-xs font-medium ${
                 rightTab === "history"
                   ? "bg-neutral-800 text-neutral-100"
@@ -1046,15 +1104,20 @@ export default function App() {
             >
               History
               {historyEntries.length > 0 ? (
-                <span className="ml-1 text-[10px] text-neutral-500">{historyEntries.length}</span>
+                <span className="ml-1 text-[10px] text-neutral-400">{historyEntries.length}</span>
               ) : null}
             </button>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div
+            id="side-panel"
+            role="tabpanel"
+            aria-labelledby={rightTab === "analysis" ? "analysis-tab" : "history-tab"}
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
             {rightTab === "analysis" ? (
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs text-neutral-500">
+                  <span className="text-xs text-neutral-400">
                     Pin a plan, change the schema, then Explain again to compare.
                   </span>
                   <button
@@ -1082,6 +1145,7 @@ export default function App() {
                 ) : null}
                 {planError && (
                   <div
+                    role="alert"
                     className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
                     data-testid="plan-error"
                   >
@@ -1091,7 +1155,7 @@ export default function App() {
                 {plan ? (
                   <PlanPanel plan={plan} />
                 ) : !planError ? (
-                  <p className="text-sm text-neutral-500">
+                  <p className="text-sm text-neutral-400">
                     Run Explain to see how SQLite processes the query: scans, searches, and index
                     usage, with the raw plan output preserved.
                   </p>
@@ -1103,6 +1167,7 @@ export default function App() {
                 ) : null}
                 {planDiffError ? (
                   <div
+                    role="alert"
                     className="rounded border border-red-700 bg-red-950/40 p-2 text-xs text-red-200"
                     data-testid="plan-diff-error"
                   >
@@ -1111,7 +1176,7 @@ export default function App() {
                 ) : null}
                 {planDiff ? <PlanDiffView diff={planDiff} /> : null}
                 {pinnedPlan && plan && !planDiff && !diffing && !planDiffError ? (
-                  <p className="text-xs text-neutral-500" data-testid="plan-diff-hint">
+                  <p className="text-xs text-neutral-400" data-testid="plan-diff-hint">
                     The current plan is pinned. Change the schema and run Explain again to see a
                     node-level diff.
                   </p>
@@ -1142,7 +1207,7 @@ export default function App() {
         onImported={handleImported}
       />
 
-      <footer className="border-t border-neutral-800 px-4 py-2 text-[11px] text-neutral-500">
+      <footer className="border-t border-neutral-800 px-4 py-2 text-[11px] text-neutral-400">
         Browser-only SQLite · no server · statement policy blocks ATTACH and VACUUM INTO · tab guard
         holds the storage lock
       </footer>

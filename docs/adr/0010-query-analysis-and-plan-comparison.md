@@ -28,8 +28,9 @@ or the TypeScript fallback is active; the toolkit lives in the worker.
   dropped. SQLite reports a forest (subqueries can have their own roots), not a
   single tree.
 - The tree is rendered as a nested `ul[role="tree"]` with `treeitem` levels, so
-  screen readers get the hierarchy without a custom widget. Full keyboard and
-  screen-reader auditing remains part of the Week 9 NFR-11 pass.
+  screen readers get the hierarchy without a custom widget. The Week 9 audit
+  (ADR-011) ran axe over a rendered plan and kept the role/name contract; the
+  hands-on screen-reader spot check remains with the Safari matrix run.
 - `describePlanNode` produces one neutral sentence per node. Scan, search,
   covering index, automatic index, integer primary key, temp B-tree,
   co-routine, materialization, and Bloom filter forms are described as facts.

@@ -47,6 +47,7 @@ export function StatementBlock({ result, index, position, fill = false }: Statem
         : undefined;
     return (
       <div
+        role="alert"
         data-testid={`stmt-error-${index}`}
         className="rounded border border-red-700 bg-red-950/40 p-3 text-sm"
       >
@@ -115,7 +116,7 @@ export function StatementBlock({ result, index, position, fill = false }: Statem
       </div>
       <pre
         className={
-          fill ? "mt-2 truncate text-neutral-500" : "mt-2 overflow-x-auto text-neutral-500"
+          fill ? "mt-2 truncate text-neutral-400" : "mt-2 overflow-x-auto text-neutral-400"
         }
         title={fill ? result.sql : undefined}
       >

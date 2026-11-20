@@ -53,7 +53,7 @@ export class ErrorBoundary extends Component<Props, State> {
             type="button"
             data-testid="error-boundary-reload"
             onClick={() => window.location.reload()}
-            className="rounded bg-sky-700 px-4 py-2 font-medium text-white hover:bg-sky-600"
+            className="rounded bg-sky-800 px-4 py-2 font-medium text-white hover:bg-sky-700"
           >
             Reload the app
           </button>

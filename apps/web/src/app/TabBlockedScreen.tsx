@@ -14,7 +14,7 @@ export function TabBlockedScreen({ onRetry }: { onRetry: () => void }) {
         type="button"
         data-testid="tab-retry"
         onClick={onRetry}
-        className="rounded bg-sky-700 px-4 py-2 font-medium text-white hover:bg-sky-600"
+        className="rounded bg-sky-800 px-4 py-2 font-medium text-white hover:bg-sky-700"
       >
         Retry
       </button>

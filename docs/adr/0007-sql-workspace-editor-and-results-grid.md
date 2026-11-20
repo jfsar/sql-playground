@@ -96,8 +96,9 @@ mark. Helpers live in `shared/textPosition.ts` (pure, unit-tested).
   explain-diff) reuses it; an empty selection always falls back to the whole
   document, so stale selections cannot silently truncate a run.
 - Virtualization is homegrown with fixed row heights: cheap and dependency-
-  free, but it must be re-audited with the Week 9 NFR-11 pass, and variable-
-  height rows (e.g. wrapped cell text) would require measuring before reuse.
+  free. The Week 9 audit (ADR-011) re-checked the grid semantics and keyboard
+  path; variable-height rows (e.g. wrapped cell text) would require measuring
+  before reuse.
 - No autocomplete keeps scope on the plan; adding
   `@codemirror/autocomplete` later is an additive extension.
 - Cancel is a worker restart, so it also rolls back an open transaction —

@@ -88,6 +88,7 @@ export function HistoryPanel({
 
       {error ? (
         <div
+          role="alert"
           data-testid="history-error"
           className="rounded border border-red-800 bg-red-950/40 p-2 text-[11px] text-red-300"
         >
@@ -96,7 +97,7 @@ export function HistoryPanel({
       ) : null}
 
       {entries.length === 0 ? (
-        <p className="text-sm text-neutral-500" data-testid="history-empty">
+        <p role="status" className="text-sm text-neutral-400" data-testid="history-empty">
           No runs recorded yet. Executed SQL appears here, newest first (last 100).
         </p>
       ) : (
@@ -109,7 +110,7 @@ export function HistoryPanel({
                 onClick={() => onLoad(entry.sql)}
                 className="w-full rounded border border-neutral-800 bg-neutral-900/60 p-2 text-left hover:border-neutral-700 hover:bg-neutral-900"
               >
-                <div className="flex items-center gap-2 text-[10px] text-neutral-500">
+                <div className="flex items-center gap-2 text-[10px] text-neutral-400">
                   <span
                     className={
                       entry.ok

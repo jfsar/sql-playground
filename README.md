@@ -43,16 +43,18 @@ bundle); `E2E_BROWSER=firefox` selects the browser. CI runs
 ```
 apps/web/          React + TypeScript application
   src/shared/      Typed contracts (plan §5.3) + error model (DB_ERROR_CODES)
+                   + browser/viewport capability rules (Week 9)
   src/services/    database (DatabaseService, execute, explain, policy), worker
                    manager, toolkit (PlanToolkit: Rust wasm + TS fallback),
                    storage (metadata DB, reconcile, quota, tab guard)
   src/workers/     sqlite.worker.ts (WASM + opfs-sahpool + PlanToolkit + file ops)
   src/features/    sql-editor (CodeMirror 6), database-explorer, query-results,
                    query-analysis, query-history, database-import/export
+  src/app/         layout, error boundary, environment gate, tab-blocked screen
   src/generated/   wasm-bindgen output (git-ignored, built by pnpm build:wasm)
-  e2e/             Playwright specs (PoC + Weeks 2–8)
+  e2e/             Playwright specs (PoC + Weeks 2–9, including axe)
 crates/query-analyzer/  Rust plan parser + diff (ADR-002, behind PlanToolkit)
-docs/adr/          ADR-001 … ADR-010
+docs/adr/          ADR-001 … ADR-011
 ```
 
 ## CI
@@ -101,9 +103,13 @@ for client-side deep links.
 
 ## Browser support
 
-See plan §2. Chrome/Edge/Firefox current, Safari 17+. Phones unsupported. If
-OPFS is unavailable the app falls back to an in-memory database with a visible
-**not persistent** banner — never a silent fallback.
+See plan §2. Chrome/Edge/Firefox current, Safari 17+. Desktop-first: **≥1024 px
+is supported**, 768–1023 px is best effort with a persistent warning, and
+phone-sized screens (<768 px) are blocked with a clear message. Browsers
+missing WebAssembly, Web Workers, or IndexedDB get an unsupported-browser
+screen before the worker starts (Week 9). If OPFS is unavailable the app falls
+back to an in-memory database with a visible **not persistent** banner — never
+a silent fallback.
 
 **PoC status (Week 2):** full e2e suite passes on **Chromium and Firefox**
 (dev + production builds). Safari 17+ verification is pending a macOS run
@@ -247,3 +253,27 @@ the Safari matrix run still owed before release.
 - [x] ADR-010 written; 271 unit tests + 29 e2e tests green (dev + production
       build), 19 Rust tests
 - [ ] Safari 17+ run (pending macOS; ADR-001/002/005 note it)
+
+### Week 9
+
+- [x] Environment gate before the worker: missing WebAssembly, Web Workers, or
+      IndexedDB shows a blocking unsupported-browser screen with the supported
+      browser list (scenario 22); OPFS/Web Locks keep their existing degraded
+      banners
+- [x] Desktop-first viewport rules: ≥1024 px supported, 768–1023 px best effort
+      with a persistent warning, <768 px blocked; no page-level horizontal
+      overflow at 1280 px (NFR-06)
+- [x] Dark-theme polish: `color-scheme`, dark CodeMirror highlighting,
+      accessible secondary text and action colors, and a visible
+      `:focus-visible` ring on every control
+- [x] Accessibility audit: skip link, named banner/main/complementary
+      landmarks, complete side-panel tab pattern, dialog Tab trap and focus
+      restore, `role="status"` loading regions, `role="alert"` errors, and
+      before/after labels that do not rely on color
+- [x] Automated axe audit (WCAG 2.2 A/AA) over the ready workspace, results,
+      history, analysis, and import dialog: **0 violations**; keyboard-only
+      walkthrough and landmark/name checks added (scenario 21, NFR-11)
+- [x] ADR-011 written; 288 unit tests + 36 e2e tests green (dev + production
+      build)
+- [ ] Manual NVDA/VoiceOver session and Safari 17+ run (pending macOS;
+      ADR-011/001/002/005 note it)

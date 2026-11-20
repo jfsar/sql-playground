@@ -54,9 +54,13 @@ export function ImportDatabaseDialog({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ScriptImportResult | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
+    previousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setFile(null);
     setReport(null);
     setName("");
@@ -66,13 +70,35 @@ export function ImportDatabaseDialog({
     setError(null);
     setResult(null);
     const timer = setTimeout(() => inputRef.current?.focus(), 0);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      previousFocusRef.current?.focus();
+    };
   }, [open]);
 
   useEffect(() => {
     if (!open) return;
+    const focusableSelector =
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busy) onClose();
+      if (event.key === "Escape" && !busy) {
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const nodes = Array.from(panel.querySelectorAll<HTMLElement>(focusableSelector));
+      if (nodes.length === 0) return;
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
@@ -146,9 +172,11 @@ export function ImportDatabaseDialog({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="import-dialog-title"
+        aria-describedby="import-dialog-description"
         data-testid="import-dialog"
         className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 p-4 shadow-xl"
       >
@@ -167,7 +195,7 @@ export function ImportDatabaseDialog({
           </button>
         </div>
 
-        <p className="mt-2 text-xs text-neutral-500">
+        <p id="import-dialog-description" className="mt-2 text-xs text-neutral-400">
           Imports create a new database entry and never overwrite existing databases. SQLite files
           are validated and checked before anything is registered.
         </p>
@@ -191,13 +219,13 @@ export function ImportDatabaseDialog({
             className="mt-3 space-y-2 rounded border border-neutral-800 bg-neutral-950/60 p-3 text-xs text-neutral-300"
           >
             <div>
-              <span className="text-neutral-500">Type: </span>
+              <span className="text-neutral-400">Type: </span>
               {report.kind === "sqlite" ? "SQLite database" : "SQL script"} ·{" "}
               {formatBytes(report.sizeBytes)}
             </div>
             {report.pageSize ? (
               <div>
-                <span className="text-neutral-500">Page size: </span>
+                <span className="text-neutral-400">Page size: </span>
                 {report.pageSize} bytes · journal {report.journalMode ?? "unknown"}
               </div>
             ) : null}
@@ -212,6 +240,7 @@ export function ImportDatabaseDialog({
             ))}
             {report.error ? (
               <div
+                role="alert"
                 data-testid="import-validation-error"
                 className="rounded border border-red-800 bg-red-950/40 p-2 text-red-200"
               >
@@ -224,6 +253,7 @@ export function ImportDatabaseDialog({
 
         {quota && !quota.ok ? (
           <div
+            role="alert"
             data-testid="import-quota-error"
             className="mt-3 rounded border border-red-800 bg-red-950/40 p-2 text-xs text-red-200"
           >
@@ -293,7 +323,7 @@ export function ImportDatabaseDialog({
             ) : null}
 
             {isScript ? (
-              <p className="text-[11px] text-neutral-500">
+              <p className="text-[11px] text-neutral-400">
                 Scripts run through the execution contract and stop at the first error. A new
                 database is removed if any statement fails; an existing database keeps earlier
                 statement effects.
@@ -305,7 +335,7 @@ export function ImportDatabaseDialog({
               data-testid="import-confirm"
               onClick={() => void submit()}
               disabled={!canSubmit}
-              className="rounded bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-40"
+              className="rounded bg-sky-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-40"
             >
               {busy ? "Importing…" : isScript ? "Run script import" : "Import database"}
             </button>
@@ -314,6 +344,7 @@ export function ImportDatabaseDialog({
 
         {error ? (
           <div
+            role="alert"
             data-testid="import-error"
             className="mt-3 rounded border border-red-800 bg-red-950/40 p-2 text-xs text-red-200"
           >
@@ -332,7 +363,7 @@ export function ImportDatabaseDialog({
               {result.response.totalEngineMs.toFixed(2)} ms
             </div>
             {result.rolledBack ? (
-              <div className="mt-1 text-amber-300" data-testid="import-rolled-back">
+              <div role="status" className="mt-1 text-amber-300" data-testid="import-rolled-back">
                 The script failed, so the new database was removed.
               </div>
             ) : null}

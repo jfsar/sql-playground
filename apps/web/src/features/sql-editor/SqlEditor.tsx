@@ -14,12 +14,8 @@ import {
   type DecorationSet,
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import {
-  bracketMatching,
-  defaultHighlightStyle,
-  indentOnInput,
-  syntaxHighlighting,
-} from "@codemirror/language";
+import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language";
+import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { SQLite, sql } from "@codemirror/lang-sql";
@@ -73,7 +69,7 @@ const sqlEditorTheme = EditorView.theme(
     ".cm-line": { padding: "0 0.75rem" },
     ".cm-gutters": {
       backgroundColor: "#0a0a0a",
-      color: "#525252",
+      color: "#8a8a8a",
       border: "none",
       borderRight: "1px solid #262626",
     },
@@ -143,7 +139,9 @@ export function SqlEditor({
           drawSelection(),
           EditorState.allowMultipleSelections.of(true),
           indentOnInput(),
-          syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+          // A dark-background highlight style: the default palette is built for
+          // light surfaces and fails contrast on the dark editor (Week 9 audit).
+          syntaxHighlighting(oneDarkHighlightStyle, { fallback: true }),
           bracketMatching(),
           closeBrackets(),
           rectangularSelection(),

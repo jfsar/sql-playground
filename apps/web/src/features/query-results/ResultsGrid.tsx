@@ -228,7 +228,7 @@ export function ResultsGrid({
                   <span className="block truncate">
                     {c.name}
                     {c.declaredType ? (
-                      <span className="ml-1 font-normal text-neutral-500">{c.declaredType}</span>
+                      <span className="ml-1 font-normal text-neutral-400">{c.declaredType}</span>
                     ) : null}
                   </span>
                 </th>

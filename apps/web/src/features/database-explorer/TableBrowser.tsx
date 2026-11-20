@@ -29,7 +29,7 @@ export function TableBrowser({ table, page, loading, error, onPage, onClose }: T
             {table}
           </span>
           {page ? (
-            <span className="ml-2 text-neutral-500" data-testid="table-page-status">
+            <span className="ml-2 text-neutral-400" data-testid="table-page-status">
               rows {first}–{last} of {total}
             </span>
           ) : null}
@@ -67,6 +67,7 @@ export function TableBrowser({ table, page, loading, error, onPage, onClose }: T
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
         {error ? (
           <div
+            role="alert"
             data-testid="table-browser-error"
             className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200"
           >
@@ -74,12 +75,12 @@ export function TableBrowser({ table, page, loading, error, onPage, onClose }: T
           </div>
         ) : null}
         {loading && !page ? (
-          <p className="text-sm text-neutral-500" data-testid="table-browser-loading">
+          <p role="status" className="text-sm text-neutral-400" data-testid="table-browser-loading">
             Loading rows…
           </p>
         ) : null}
         {page && page.rows.length === 0 ? (
-          <p className="text-sm text-neutral-500" data-testid="table-browser-empty">
+          <p className="text-sm text-neutral-400" data-testid="table-browser-empty">
             This {table} has no rows.
           </p>
         ) : null}

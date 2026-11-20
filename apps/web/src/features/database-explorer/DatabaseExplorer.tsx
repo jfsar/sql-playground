@@ -56,7 +56,7 @@ function StorageFooter({
       ? `${formatBytes(info.usageBytes)} of ${formatBytes(info.quotaBytes)} used`
       : "storage estimate unavailable";
   return (
-    <div className="border-t border-neutral-800 p-3 text-[11px] text-neutral-500">
+    <div className="border-t border-neutral-800 p-3 text-[11px] text-neutral-400">
       <div data-testid="storage-usage">{usage}</div>
       <div className="mt-1" data-testid="storage-persisted">
         {info.persisted
@@ -175,7 +175,7 @@ export function DatabaseExplorer({
             data-testid="confirm-create"
             onClick={submitCreate}
             disabled={busy}
-            className="rounded bg-sky-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-sky-600 disabled:opacity-40"
+            className="rounded bg-sky-800 px-2 py-1 text-[11px] font-medium text-white hover:bg-sky-700 disabled:opacity-40"
           >
             Add
           </button>
@@ -184,6 +184,7 @@ export function DatabaseExplorer({
 
       {error ? (
         <div
+          role="alert"
           data-testid="database-op-error"
           className="m-3 rounded border border-red-800 bg-red-950/40 p-2 text-[11px] text-red-300"
         >
@@ -193,7 +194,9 @@ export function DatabaseExplorer({
 
       <ul className="min-h-0 flex-1 overflow-y-auto p-2">
         {databases.length === 0 ? (
-          <li className="p-2 text-xs text-neutral-500">No databases yet.</li>
+          <li className="p-2 text-xs text-neutral-400">
+            No databases yet. Create one, open the sample, or import a file.
+          </li>
         ) : null}
         {databases.map((db) => {
           const isActive = db.id === activeId;
@@ -228,7 +231,7 @@ export function DatabaseExplorer({
                     data-testid="confirm-rename"
                     onClick={() => submitRename(db.id)}
                     disabled={busy}
-                    className="rounded bg-sky-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-sky-600 disabled:opacity-40"
+                    className="rounded bg-sky-800 px-2 py-1 text-[11px] font-medium text-white hover:bg-sky-700 disabled:opacity-40"
                   >
                     Save
                   </button>
@@ -284,7 +287,7 @@ export function DatabaseExplorer({
                       setDeletingId(null);
                     }}
                     disabled={busy}
-                    className="rounded px-1.5 py-0.5 text-[11px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-40"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-40"
                   >
                     Rename
                   </button>
@@ -297,7 +300,7 @@ export function DatabaseExplorer({
                       setRenamingId(null);
                     }}
                     disabled={busy}
-                    className="rounded px-1.5 py-0.5 text-[11px] text-neutral-500 hover:bg-neutral-800 hover:text-red-400 disabled:opacity-40"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-neutral-800 hover:text-red-400 disabled:opacity-40"
                   >
                     Delete
                   </button>

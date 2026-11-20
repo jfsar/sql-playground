@@ -51,9 +51,18 @@ export function PlanDiffView({ diff }: { diff: PlanDiff }) {
                     data-testid={`plan-diff-changed-${before.id}`}
                     className="text-neutral-400"
                   >
-                    <span className="text-neutral-500">{nodeText(before)}</span>
-                    <span className="text-amber-400"> → </span>
-                    <span className="text-neutral-200">{nodeText(after)}</span>
+                    <span className="text-neutral-400">
+                      <span className="sr-only">before: </span>
+                      {nodeText(before)}
+                    </span>
+                    <span className="text-amber-400" aria-hidden="true">
+                      {" "}
+                      →{" "}
+                    </span>
+                    <span className="text-neutral-200">
+                      <span className="sr-only">after: </span>
+                      {nodeText(after)}
+                    </span>
                   </li>
                 ))}
               </ul>
