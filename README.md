@@ -31,12 +31,15 @@ export, and the multi-tab guard.
 | `pnpm lint` | ESLint |
 | `pnpm test` | Vitest unit tests (incl. wasm round-trip; skips if wasm not built) |
 | `pnpm test:e2e` | Playwright e2e — dev server by default |
+| `pnpm benchmark` | Week 10 benchmarks → `docs/benchmarks/week10-<browser>.json` (preview build) |
 | `pnpm format` | Prettier write |
 
 E2E options (env vars): `E2E_PREVIEW=1` runs the suite against `vite preview`
 (**required for the ADR-002 gate** — proves the wasm loads in a production
-bundle); `E2E_BROWSER=firefox` selects the browser. CI runs
-`E2E_PREVIEW=1` on Chromium.
+bundle); `E2E_BROWSER=chromium|firefox|webkit` selects the browser. CI gates the
+production preview suite on **Chromium and Firefox**; WebKit runs best effort
+(no OPFS on Windows). `E2E_BROWSER=firefox pnpm benchmark` writes the Firefox
+report.
 
 ## Structure
 
@@ -52,9 +55,11 @@ apps/web/          React + TypeScript application
                    query-analysis, query-history, database-import/export
   src/app/         layout, error boundary, environment gate, tab-blocked screen
   src/generated/   wasm-bindgen output (git-ignored, built by pnpm build:wasm)
-  e2e/             Playwright specs (PoC + Weeks 2–9, including axe)
+  e2e/             Playwright specs (PoC + Weeks 2–10, including axe and privacy)
+  bench/           Week 10 benchmark harness (report-only, preview build)
 crates/query-analyzer/  Rust plan parser + diff (ADR-002, behind PlanToolkit)
-docs/adr/          ADR-001 … ADR-011
+docs/adr/          ADR-001 … ADR-012
+docs/benchmarks/   raw Week 10 benchmark JSON (per browser)
 ```
 
 ## CI
@@ -63,7 +68,9 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR:
 
 - `cargo test` (plan parser + diff) · `pnpm build:wasm`
 - `pnpm lint` · `pnpm typecheck` · `pnpm test` · `pnpm build`
-- Playwright e2e against the **production build** (`E2E_PREVIEW=1`), Chromium
+- Playwright e2e against the **production build** (`E2E_PREVIEW=1`) on a
+  Chromium + Firefox matrix; WebKit is best effort and its report is uploaded
+  even when it fails
 
 ## Deploy (Cloudflare Pages)
 
@@ -111,9 +118,14 @@ screen before the worker starts (Week 9). If OPFS is unavailable the app falls
 back to an in-memory database with a visible **not persistent** banner — never
 a silent fallback.
 
-**PoC status (Week 2):** full e2e suite passes on **Chromium and Firefox**
-(dev + production builds). Safari 17+ verification is pending a macOS run
-(see `docs/adr/0001`).
+**Week 10 status:** the full 37-test suite passes on **Chromium and Firefox**
+against dev and production builds. Playwright **WebKit 27.2** on Windows is
+best effort: its production plan-toolkit gate and dev privacy spec pass, but it
+has no OPFS,
+so persistence/import/export/reopen/cancel tests fail by platform limitation
+and are reported, never hidden. WebKit is not Safari 17+; the real Safari and
+manual screen-reader runs remain pending (ADR-001/002/005/011/012). Benchmark
+results and NFR verdicts are in [docs/benchmarks.md](./docs/benchmarks.md).
 
 ## PoC checklists
 
@@ -277,3 +289,24 @@ the Safari matrix run still owed before release.
       build)
 - [ ] Manual NVDA/VoiceOver session and Safari 17+ run (pending macOS;
       ADR-011/001/002/005 note it)
+
+### Week 10
+
+- [x] Full Playwright suite against production preview on **Chromium and
+      Firefox** (37 tests each); CI matrix runs both as gates and WebKit as a
+      non-blocking proxy with an uploaded report
+- [x] Privacy acceptance test (scenario 14 / SC-09): a sentinel row is queried
+      and exported while HTTP, WebSocket frames, fetch, XHR, beacon, and
+      cross-origin requests are recorded — zero leaks on Chromium/Firefox
+      (production) and WebKit (dev; export skipped where OPFS is absent)
+- [x] Benchmark harness at 10/50/100 MB through the real import/export UI, plus
+      startup, 1,000-row render, long tasks/frame gaps, cancel → idle, and
+      worker restart; raw results in `docs/benchmarks/`
+- [x] NFR verdicts recorded: startup 354 ms Chromium / 2,808 ms Firefox
+      (NFR-12); 50 MB reopen 190 ms / 1,617 ms (SC-10); no long tasks over
+      100 ms (SC-12); cancel 2,943 ms / 335 ms (SC-13)
+- [x] ADR-012 written; `docs/benchmarks.md` holds the report table.
+      **288 unit tests + 37 e2e tests** green (dev + production preview)
+- [ ] Real Safari 17+ and manual NVDA/VoiceOver runs (pending macOS);
+      Playwright WebKit on Windows has no OPFS and is not a substitute
+      (ADR-012)

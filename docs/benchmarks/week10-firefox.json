@@ -1,0 +1,57 @@
+{
+  "generatedAt": "2026-11-23T12:02:49.251Z",
+  "browser": {
+    "name": "firefox",
+    "version": "159.0"
+  },
+  "system": {
+    "platform": "win32",
+    "release": "10.0.26300",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "memoryGiB": 24
+  },
+  "preview": true,
+  "status": "complete",
+  "persistence": "OPFS persistent",
+  "startupMs": 2807.76,
+  "sizes": {
+    "10": {
+      "targetMiB": 10,
+      "seedMs": 448.89999999999964,
+      "exportMs": 108.01999999999998,
+      "exportBytes": 10518528,
+      "importMs": 261.65999999999985,
+      "reopenMs": 830.78
+    },
+    "50": {
+      "targetMiB": 50,
+      "seedMs": 1252.2799999999997,
+      "exportMs": 248.15999999999985,
+      "exportBytes": 52502528,
+      "importMs": 879.96,
+      "reopenMs": 1617.44
+    },
+    "100": {
+      "targetMiB": 100,
+      "seedMs": 1760.62,
+      "exportMs": 315.4399999999996,
+      "exportBytes": 104980480,
+      "importMs": 1395.6000000000004,
+      "reopenMs": 2306.84
+    }
+  },
+  "render1000": {
+    "renderMs": 45.5,
+    "ariaRowCount": "1001",
+    "renderedCells": 16,
+    "truncated": false
+  },
+  "heavyQuery": {
+    "longTasksSupported": false,
+    "longTaskCount": 0,
+    "maxLongTaskMs": 0,
+    "maxFrameGapMs": 20.81999999999971,
+    "cancelToIdleMs": 335.34000000000015,
+    "restartMs": 191
+  }
+}

@@ -12,7 +12,8 @@
     "format": "prettier --write .",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "benchmark": "playwright test -c playwright.bench.config.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",

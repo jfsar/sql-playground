@@ -1,0 +1,57 @@
+{
+  "generatedAt": "2026-11-23T12:02:14.156Z",
+  "browser": {
+    "name": "chromium",
+    "version": "158.0.8127.18"
+  },
+  "system": {
+    "platform": "win32",
+    "release": "10.0.26300",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "memoryGiB": 24
+  },
+  "preview": true,
+  "status": "complete",
+  "persistence": "OPFS persistent",
+  "startupMs": 354.27500000037253,
+  "sizes": {
+    "10": {
+      "targetMiB": 10,
+      "seedMs": 972.5299999993294,
+      "exportMs": 199.785000000149,
+      "exportBytes": 10518528,
+      "importMs": 382.785000000149,
+      "reopenMs": 157.535000000149
+    },
+    "50": {
+      "targetMiB": 50,
+      "seedMs": 2553.2200000006706,
+      "exportMs": 298.53999999910593,
+      "exportBytes": 52502528,
+      "importMs": 1886.6650000009686,
+      "reopenMs": 189.82499999925494
+    },
+    "100": {
+      "targetMiB": 100,
+      "seedMs": 4625,
+      "exportMs": 481.86999999918044,
+      "exportBytes": 104980480,
+      "importMs": 2920.175000000745,
+      "reopenMs": 166.214999999851
+    }
+  },
+  "render1000": {
+    "renderMs": 62.24000000022352,
+    "ariaRowCount": "1001",
+    "renderedCells": 16,
+    "truncated": false
+  },
+  "heavyQuery": {
+    "longTasksSupported": true,
+    "longTaskCount": 0,
+    "maxLongTaskMs": 0,
+    "maxFrameGapMs": 16.670000000000073,
+    "cancelToIdleMs": 2942.625,
+    "restartMs": 2888
+  }
+}

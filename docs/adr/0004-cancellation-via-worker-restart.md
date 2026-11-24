@@ -126,3 +126,22 @@ worker retries during that window."
 Long-result handling is unchanged from Week 4 (1,000-row cap plus virtualized
 grid); Week 7 verifies cancellation and elapsed-time UX around it rather than
 adding a second result path.
+
+## Week 10 final measurements
+
+The Week 10 benchmark re-runs cancellation on the final production build after
+1 s of a 200 M-row recursive CTE:
+
+| Browser | Cancel → idle | Worker restart | 5 s target |
+|---|---|---|---|
+| Chromium 158 | 2,943 ms | 2,888 ms | Pass (~2 s headroom) |
+| Firefox 159 | 335 ms | 191 ms | Pass |
+
+Chromium's restart is dominated by the OPFS handle-release retry schedule, not
+by WASM init: the total retry budget is ≈2.8 s, and the measured restart lands
+almost exactly on it. The Week 2 figure (87 ms) was an idle worker termination
+where handles had already been released; the Week 10 number is the realistic
+mid-query path. Firefox releases the handles immediately. The 5 s SC-13 target
+holds on both; raising the retry budget would risk the target, and lowering it
+would risk a spurious in-memory fallback. See
+[ADR-012](./0012-qa-and-benchmark-methodology.md) for the harness.

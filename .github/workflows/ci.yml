@@ -49,8 +49,14 @@ jobs:
         run: pnpm --filter web build
 
   e2e:
-    name: Playwright e2e (production build)
+    name: Playwright e2e (${{ matrix.browser }}, production build)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Chromium and Firefox gate CI. WebKit is a Safari proxy and best
+        # effort: it runs here but a failure does not block the workflow.
+        browser: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@v4
 
@@ -75,19 +81,25 @@ jobs:
       - name: Build query-analyzer wasm (ADR-002 gate)
         run: pnpm build:wasm
 
-      - name: Install Playwright browsers
-        run: pnpm --filter web exec playwright install --with-deps chromium
+      - name: Install Playwright browser
+        run: pnpm --filter web exec playwright install --with-deps ${{ matrix.browser }}
+        continue-on-error: ${{ matrix.browser == 'webkit' }}
 
       # E2E_PREVIEW runs the suite against `vite preview` (production bundle):
       # the ADR-002 gate requires the wasm to load in a production Vite build.
       - name: Run e2e (production preview)
+        id: e2e
         run: pnpm test:e2e
+        continue-on-error: ${{ matrix.browser == 'webkit' }}
         env:
           E2E_PREVIEW: "1"
+          E2E_BROWSER: ${{ matrix.browser }}
 
+      # `continue-on-error` keeps the job green for WebKit, so also check the
+      # step outcome to capture its report instead of losing it.
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: failure() || steps.e2e.outcome == 'failure'
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.browser }}
           path: apps/web/playwright-report/
           retention-days: 7

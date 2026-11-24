@@ -4,8 +4,8 @@ import { defineConfig } from "@playwright/test";
  * E2E runs against the dev server by default. Set E2E_PREVIEW=1 to run the
  * same suite against `vite preview` (production build) — required for the
  * ADR-002 gate, which must prove the wasm loads in a production Vite bundle.
- * E2E_BROWSER=firefox|chromium picks the browser (Safari is not runnable on
- * Windows; see docs/adr/0002).
+ * E2E_BROWSER=chromium|firefox|webkit picks the browser. Playwright WebKit on
+ * Windows is a proxy without OPFS, not Safari 17+ (ADR-002/ADR-012).
  */
 const preview = process.env.E2E_PREVIEW === "1";
 const browser = (process.env.E2E_BROWSER ?? "chromium") as "chromium" | "firefox" | "webkit";

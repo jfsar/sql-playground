@@ -1,0 +1,25 @@
+{
+  "generatedAt": "2026-11-23T12:03:33.478Z",
+  "browser": {
+    "name": "webkit",
+    "version": "27.2"
+  },
+  "system": {
+    "platform": "win32",
+    "release": "10.0.26300",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "memoryGiB": 24
+  },
+  "preview": true,
+  "status": "partial",
+  "persistence": "in-memory (not persistent)",
+  "startupMs": 8616.38,
+  "sizes": {},
+  "skipReason": "OPFS unavailable (in-memory (not persistent)); skipping import/export/reopen and cancel benchmarks",
+  "render1000": {
+    "renderMs": 144.76000000000022,
+    "ariaRowCount": "1001",
+    "renderedCells": 28,
+    "truncated": false
+  }
+}

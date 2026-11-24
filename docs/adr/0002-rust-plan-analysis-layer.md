@@ -1,6 +1,7 @@
 # ADR-002: Rust plan-analysis layer (PoC gate)
 
-- Status: **Accepted — gate PASSED** on Chromium and Firefox (Safari run pending)
+- Status: **Accepted — gate PASSED** on Chromium and Firefox; WebKit proxy
+  passes the wasm gate, real Safari 17+ still pending (Week 10 update)
 - Date: 2026-11-14 (Week 2 of FINAL_PROJECT_PLAN.md)
 - Related: plan §4 "ADR-002", §7 Week 2 go/no-go
 
@@ -51,9 +52,13 @@ crate moves to Future.
 | TS fallback parity | ✅ Same-rows Rust-vs-TS equality test; fallback also unit-tested standalone |
 | App code independent of implementation | ✅ Worker/App only import `PlanToolkit`; `toolkit` is reported status, not a code path |
 
-Not yet verified: the same production run on Safari 17+ (pending macOS). The
-wasm load path is browser-independent; residual risk is low but the check
-remains open until Week 10's matrix pass.
+Week 10 matrix pass: the production gate still passes on **Chromium and
+Firefox**, and it also passes on Playwright **WebKit 27.2** (dev and production
+builds). WebKit is only a proxy: it has no OPFS on Windows, so it cannot stand in
+for Safari 17+ persistence. The Safari run remains open, but the wasm gate
+itself no longer depends on that run for Chromium/Firefox. See
+[ADR-012](./0012-qa-and-benchmark-methodology.md) and
+[`docs/benchmarks.md`](../benchmarks.md).
 
 ## Consequences
 
